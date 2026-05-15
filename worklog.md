@@ -278,3 +278,42 @@ Stage Summary:
 - ASR now uses Deepgram Nova-3 model directly (better accuracy)
 - All 3 major issues resolved: voice connection, persistent keys, interface security
 - Zero lint errors, all endpoints tested and working
+
+---
+Task ID: 11
+Agent: Main
+Task: Fix premature recording stop bug - implement VAD and robust recording
+
+Work Log:
+- Diagnosed root cause of premature recording stop: no silence detection, no timeslice, 30s hard timeout, no TTS feedback protection
+- Implemented Voice Activity Detection (VAD) using Web Audio API AnalyserNode
+  - Calculates RMS volume every 100ms from audio stream
+  - Auto-stops recording after 1.8s of silence (only after speech detected)
+  - Minimum recording duration: 800ms (prevents accidental short recordings)
+  - Maximum recording duration: 90s (increased from 30s)
+- Added `timeslice=250` to MediaRecorder.start() for reliable data collection
+  - Data is collected every 250ms instead of only on stop
+  - Prevents data loss if browser kills the recording
+- Added echo cancellation, noise suppression, and auto gain control to mic stream
+- Added MIME type fallback: audio/webm;codecs=opus → audio/webm → audio/mp4
+- Prevented recording during TTS playback (isAudioPlaying check in startRecording)
+  - Mic button is disabled while persona is speaking
+  - Prevents echo/feedback from speaker to mic
+- Added double-processing prevention with isStoppingRef
+- Added minimum blob size check (< 1000 bytes = probably no speech)
+- Improved UI feedback:
+  - Voice mode indicator now shows 4 states: Recording (red), Speaking (green), Thinking (gray), Idle (slate)
+  - Recording duration badge on mic button in voice mode
+  - Recording duration shown in status bar
+  - Tooltip shows contextual message based on state
+- Added cleanup on unmount and session end
+- Verified all endpoints still work: TTS, Chat, page compilation
+- Lint passes with zero errors
+
+Stage Summary:
+- Recording no longer stops prematurely — VAD auto-detects silence and stops gracefully
+- Recording protected during TTS playback — no more echo/feedback cutting off responses
+- Recording data collected reliably every 250ms — no data loss
+- 90s max recording (up from 30s) — longer messages supported
+- Rich visual feedback shows exact recording state
+- Zero lint errors, all endpoints verified working

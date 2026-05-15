@@ -151,8 +151,17 @@ export default function Home() {
 
   // Microphone recording state
   const [isRecording, setIsRecording] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const vadIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const silenceStartRef = useRef<number>(0);
+  const recordingStartRef = useRef<number>(0);
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isStoppingRef = useRef(false);
 
   // Session end state
   const [showEndDialog, setShowEndDialog] = useState(false);
@@ -267,69 +276,240 @@ export default function Home() {
     setIsChatLoading(false);
   }, [selectedPersona, isChatLoading, chatSessionId, autoVoice, playTTS]);
 
-  const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current?.state === "recording") {
-      mediaRecorderRef.current.stop();
+  // ─── Voice Activity Detection (VAD) ─────────────────────────────────────────
+
+  const SILENCE_THRESHOLD = 8; // RMS threshold for silence detection (0-128 range)
+  const SILENCE_DURATION = 1800; // ms of silence before auto-stop
+  const MIN_RECORDING_DURATION = 800; // ms minimum recording before allowing stop
+  const MAX_RECORDING_DURATION = 90000; // ms maximum recording (90 seconds)
+  const SPEECH_DETECTION_INTERVAL = 100; // ms between VAD checks
+
+  const cleanupRecording = useCallback(() => {
+    // Stop VAD interval
+    if (vadIntervalRef.current) {
+      clearInterval(vadIntervalRef.current);
+      vadIntervalRef.current = null;
     }
-    setIsRecording(false);
+    // Stop recording timer
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    // Close audio context
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      try { audioContextRef.current.close(); } catch { /* ignore */ }
+    }
+    audioContextRef.current = null;
+    analyserRef.current = null;
   }, []);
 
-  const startRecording = useCallback(async () => {
+  const processRecordedAudio = useCallback(async () => {
+    if (isStoppingRef.current) return; // Prevent double-processing
+    isStoppingRef.current = true;
+
+    const chunks = [...audioChunksRef.current];
+    audioChunksRef.current = [];
+
+    // Release mic stream
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(t => t.stop());
+      micStreamRef.current = null;
+    }
+
+    cleanupRecording();
+
+    // Check minimum duration
+    const duration = Date.now() - recordingStartRef.current;
+    if (duration < MIN_RECORDING_DURATION || chunks.length === 0) {
+      setIsRecording(false);
+      setRecordingDuration(0);
+      isStoppingRef.current = false;
+      return;
+    }
+
+    setIsRecording(false);
+    setRecordingDuration(0);
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      const audioBlob = new Blob(chunks, { type: "audio/webm" });
+
+      // Check blob size (too small = probably no speech)
+      if (audioBlob.size < 1000) {
+        isStoppingRef.current = false;
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64Audio = (reader.result as string).split(",")[1];
+        if (!base64Audio) {
+          isStoppingRef.current = false;
+          return;
+        }
+
+        try {
+          const res = await fetch("/api/roleplay/asr", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audio: base64Audio }),
+          });
+          const data = await res.json();
+          if (data.success && data.text && data.text.trim()) {
+            sendChatMessageWithText(data.text.trim());
+          }
+        } catch (err) {
+          console.error("ASR error:", err);
+        } finally {
+          isStoppingRef.current = false;
+        }
+      };
+      reader.readAsDataURL(audioBlob);
+    } catch (err) {
+      console.error("Audio processing error:", err);
+      isStoppingRef.current = false;
+    }
+  }, [cleanupRecording, sendChatMessageWithText]);
+
+  const stopRecording = useCallback(() => {
+    if (isStoppingRef.current) return;
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop(); // Triggers ondataavailable then onstop
+    } else {
+      setIsRecording(false);
+      setRecordingDuration(0);
+      cleanupRecording();
+    }
+  }, [cleanupRecording]);
+
+  const startRecording = useCallback(async () => {
+    // Don't start if TTS is playing (prevent echo/feedback)
+    if (isAudioPlaying || playingMessageIdx !== null) return;
+    // Don't start if already recording
+    if (isRecording || isStoppingRef.current) return;
+    // Don't start if chat is loading
+    if (isChatLoading) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
+      micStreamRef.current = stream;
+
+      // Check supported MIME type
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+          ? "audio/webm"
+          : "audio/mp4";
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
+      isStoppingRef.current = false;
+      silenceStartRef.current = 0;
 
+      // Collect data with timeslice for reliability
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
         }
       };
 
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-        stream.getTracks().forEach(t => t.stop());
-
-        const reader = new FileReader();
-        reader.onloadend = async () => {
-          const base64Audio = (reader.result as string).split(",")[1];
-          if (!base64Audio) return;
-
-          try {
-            const res = await fetch("/api/roleplay/asr", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ audio: base64Audio }),
-            });
-            const data = await res.json();
-            if (data.success && data.text) {
-              setChatInput(data.text);
-              setTimeout(() => {
-                if (data.text.trim()) {
-                  sendChatMessageWithText(data.text.trim());
-                }
-              }, 300);
-            }
-          } catch (err) {
-            console.error("ASR error:", err);
-          }
-        };
-        reader.readAsDataURL(audioBlob);
+      mediaRecorder.onerror = () => {
+        console.error("MediaRecorder error");
+        stopRecording();
       };
 
-      mediaRecorder.start();
-      setIsRecording(true);
+      mediaRecorder.onstop = () => {
+        // Process the recorded audio
+        processRecordedAudio();
+      };
 
-      setTimeout(() => {
-        if (mediaRecorderRef.current?.state === "recording") {
-          stopRecording();
-        }
-      }, 30000);
+      // Set up Voice Activity Detection
+      try {
+        const audioCtx = new AudioContext();
+        audioContextRef.current = audioCtx;
+        const source = audioCtx.createMediaStreamSource(stream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.8;
+        source.connect(analyser);
+        analyserRef.current = analyser;
+
+        const dataArray = new Uint8Array(analyser.fftSize);
+        let hasDetectedSpeech = false;
+
+        vadIntervalRef.current = setInterval(() => {
+          if (!analyserRef.current || isStoppingRef.current) {
+            if (vadIntervalRef.current) clearInterval(vadIntervalRef.current);
+            return;
+          }
+
+          analyserRef.current.getByteTimeDomainData(dataArray);
+
+          // Calculate RMS volume
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            const val = (dataArray[i] - 128) / 128;
+            sum += val * val;
+          }
+          const rms = Math.sqrt(sum / dataArray.length) * 128;
+
+          const now = Date.now();
+          const elapsed = now - recordingStartRef.current;
+
+          // Detect speech
+          if (rms > SILENCE_THRESHOLD) {
+            hasDetectedSpeech = true;
+            silenceStartRef.current = 0; // Reset silence timer
+          } else if (hasDetectedSpeech && silenceStartRef.current === 0) {
+            // Speech was detected, now silence started
+            silenceStartRef.current = now;
+          }
+
+          // Auto-stop after prolonged silence (only after speech was detected)
+          if (hasDetectedSpeech && silenceStartRef.current > 0 && (now - silenceStartRef.current) > SILENCE_DURATION) {
+            // Only auto-stop if minimum duration met
+            if (elapsed > MIN_RECORDING_DURATION) {
+              stopRecording();
+            }
+          }
+
+          // Force stop at max duration
+          if (elapsed > MAX_RECORDING_DURATION) {
+            stopRecording();
+          }
+        }, SPEECH_DETECTION_INTERVAL);
+      } catch (vadErr) {
+        console.warn("VAD setup failed, using timer-only mode:", vadErr);
+        // Fallback: just use a max duration timer
+        setTimeout(() => {
+          if (mediaRecorderRef.current?.state === "recording") {
+            stopRecording();
+          }
+        }, MAX_RECORDING_DURATION);
+      }
+
+      // Start recording with timeslice for reliable data collection
+      mediaRecorder.start(250); // Collect data every 250ms
+      recordingStartRef.current = Date.now();
+      setIsRecording(true);
+      setRecordingDuration(0);
+
+      // Update recording duration timer
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingDuration(Math.round((Date.now() - recordingStartRef.current) / 1000));
+      }, 500);
+
     } catch (err) {
       console.error("Microphone access error:", err);
+      setIsRecording(false);
     }
-  }, [sendChatMessageWithText, stopRecording]);
+  }, [isAudioPlaying, playingMessageIdx, isRecording, isChatLoading, stopRecording, processRecordedAudio]);
 
   // ─── Data Fetching ──────────────────────────────────────────────────────────
 
@@ -349,6 +529,16 @@ export default function Home() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages]);
+
+  // Cleanup recording resources on unmount or view change
+  useEffect(() => {
+    return () => {
+      cleanupRecording();
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach(t => t.stop());
+      }
+    };
+  }, [cleanupRecording]);
 
   // Timer for active calls
   useEffect(() => {
@@ -431,6 +621,13 @@ export default function Home() {
     setPlayingMessageIdx(null);
     setTtsLoading(null);
     setIsAudioPlaying(false);
+
+    // Stop recording if active
+    if (isRecording) {
+      stopRecording();
+    }
+    // Cleanup recording resources
+    cleanupRecording();
 
     if (sessionId) {
       try {
@@ -806,25 +1003,56 @@ export default function Home() {
     <div className="space-y-4 h-full flex flex-col">
       {/* Voice mode indicator */}
       {mode === "voice" && (
-        <div className="flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-emerald-50 border border-emerald-200">
-          <motion.div animate={{ scale: isAudioPlaying ? [1, 1.2, 1] : 1 }} transition={{ duration: 0.8, repeat: isAudioPlaying ? Infinity : 0 }}>
-            {isAudioPlaying ? <Volume2 className="w-4 h-4 text-emerald-600" /> : <Mic className="w-4 h-4 text-emerald-600" />}
-          </motion.div>
-          <span className="text-xs font-medium text-emerald-700">
-            {isAudioPlaying ? `${selectedPersona?.name} is speaking...` : isRecording ? "Listening to you..." : "Voice Call Active — Click mic to speak"}
-          </span>
-          {isAudioPlaying && (
-            <div className="flex gap-0.5 items-end">
-              {[1, 2, 3, 4].map(bar => (
-                <motion.div
-                  key={bar}
-                  animate={{ height: [4, 12 + Math.random() * 8, 4] }}
-                  transition={{ duration: 0.5 + Math.random() * 0.3, repeat: Infinity, delay: bar * 0.1 }}
-                  className="w-1 bg-emerald-500 rounded-full"
-                  style={{ height: 4 }}
-                />
-              ))}
-            </div>
+        <div className={`flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg border transition-colors ${
+          isRecording
+            ? "bg-red-50 border-red-300"
+            : isAudioPlaying
+              ? "bg-emerald-50 border-emerald-200"
+              : "bg-slate-50 border-slate-200"
+        }`}>
+          {isRecording ? (
+            <>
+              <motion.div animate={{ scale: [1, 1.3, 1] }} transition={{ duration: 0.8, repeat: Infinity }}>
+                <div className="w-3 h-3 rounded-full bg-red-500" />
+              </motion.div>
+              <span className="text-xs font-medium text-red-700">
+                Recording{recordingDuration > 0 ? ` · ${recordingDuration}s` : ""} — Speak now, auto-stops when silent
+              </span>
+            </>
+          ) : isAudioPlaying ? (
+            <>
+              <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ duration: 0.8, repeat: Infinity }}>
+                <Volume2 className="w-4 h-4 text-emerald-600" />
+              </motion.div>
+              <span className="text-xs font-medium text-emerald-700">
+                {selectedPersona?.name} is speaking...
+              </span>
+              <div className="flex gap-0.5 items-end">
+                {[1, 2, 3, 4].map(bar => (
+                  <motion.div
+                    key={bar}
+                    animate={{ height: [4, 12 + Math.random() * 8, 4] }}
+                    transition={{ duration: 0.5 + Math.random() * 0.3, repeat: Infinity, delay: bar * 0.1 }}
+                    className="w-1 bg-emerald-500 rounded-full"
+                    style={{ height: 4 }}
+                  />
+                ))}
+              </div>
+            </>
+          ) : isChatLoading ? (
+            <>
+              <RefreshCw className="w-4 h-4 text-slate-400 animate-spin" />
+              <span className="text-xs font-medium text-slate-500">
+                {selectedPersona?.name} is thinking...
+              </span>
+            </>
+          ) : (
+            <>
+              <Mic className="w-4 h-4 text-slate-500" />
+              <span className="text-xs font-medium text-slate-600">
+                Click the mic button to speak — auto-stops when you pause
+              </span>
+            </>
           )}
         </div>
       )}
@@ -912,18 +1140,34 @@ export default function Home() {
                 variant={isRecording ? "destructive" : mode === "voice" ? "default" : "outline"}
                 size={mode === "voice" ? "default" : "icon"}
                 onClick={isRecording ? stopRecording : startRecording}
-                className={`shrink-0 ${mode === "voice" ? "w-12 h-12" : ""}`}
+                disabled={!isRecording && (isAudioPlaying || playingMessageIdx !== null || isChatLoading)}
+                className={`shrink-0 relative ${mode === "voice" ? "w-12 h-12" : ""}`}
               >
                 {isRecording ? (
-                  <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ duration: 0.8, repeat: Infinity }}>
-                    <MicOff className="w-4 h-4" />
-                  </motion.div>
+                  <>
+                    <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ duration: 0.8, repeat: Infinity }}>
+                      <MicOff className="w-5 h-5" />
+                    </motion.div>
+                    {recordingDuration > 0 && mode === "voice" && (
+                      <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-600 text-white text-[9px] font-bold flex items-center justify-center">
+                        {recordingDuration}
+                      </span>
+                    )}
+                  </>
                 ) : (
-                  <Mic className="w-4 h-4" />
+                  <Mic className="w-5 h-5" />
                 )}
               </Button>
             </TooltipTrigger>
-            <TooltipContent>{isRecording ? "Stop recording" : mode === "voice" ? "Hold to speak" : "Voice input"}</TooltipContent>
+            <TooltipContent>
+              {isRecording
+                ? `Stop recording (${recordingDuration}s)`
+                : isAudioPlaying
+                  ? "Wait for persona to finish speaking"
+                  : mode === "voice"
+                    ? "Click to speak — auto-stops when you pause"
+                    : "Voice input"}
+            </TooltipContent>
           </Tooltip>
         </TooltipProvider>
 
