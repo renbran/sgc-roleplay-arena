@@ -21,7 +21,49 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { PERSONAS, DIFFICULTY_CONFIG, type Persona } from "@/lib/personas";
+
+// ─── Persona Type Mapping ────────────────────────────────────────────────────
+
+const PERSONA_TYPES: Record<string, "decision-maker" | "gatekeeper" | "influencer"> = {
+  p1_faisal: "decision-maker",
+  p2_noura: "decision-maker",
+  p3_omar: "influencer",
+  p4_rajesh: "decision-maker",
+  p5_imran: "influencer",
+  p6_vikram: "influencer",
+  p7_sarah: "decision-maker",
+  p8_michael: "influencer",
+  p9_andrew: "decision-maker",
+  p10_maricel: "gatekeeper",
+  p11_dana: "gatekeeper",
+  p12_tariq: "influencer",
+  p13_fatima: "gatekeeper",
+};
+
+const PERSONA_TYPE_CONFIG = {
+  "decision-maker": { label: "Decision Maker", color: "bg-slate-100 text-slate-700 border-slate-200", icon: "👑" },
+  "gatekeeper": { label: "Gatekeeper", color: "bg-amber-100 text-amber-700 border-amber-200", icon: "🛡️" },
+  "influencer": { label: "Influencer", color: "bg-sky-100 text-sky-700 border-sky-200", icon: "🎯" },
+} as const;
+
+// ─── TTS Voice Mapping ───────────────────────────────────────────────────────
+
+const TTS_VOICE_MAP: Record<string, string> = {
+  "aura-2-cora-en": "kazi",
+  "aura-2-amalthea-en": "kazi",
+  "aura-2-orion-en": "jam",
+  "aura-2-apollo-en": "jam",
+  "aura-2-arcas-en": "kazi",
+  "aura-2-luna-en": "tongtong",
+  "aura-2-helios-en": "jam",
+  "aura-2-atlas-en": "jam",
+};
+
+function getTTSVoice(persona: Persona): string {
+  return TTS_VOICE_MAP[persona.voiceId] || "kazi";
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -64,6 +106,7 @@ export default function Home() {
   const [dispatchError, setDispatchError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [difficultyFilter, setDifficultyFilter] = useState<string>("all");
+  const [typeFilter, setTypeFilter] = useState<string>("all");
   const [showTips, setShowTips] = useState(true);
   const [sessionNotes, setSessionNotes] = useState("");
   const [callTimer, setCallTimer] = useState(0);
@@ -76,12 +119,169 @@ export default function Home() {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [chatSessionId, setChatSessionId] = useState<string>("");
 
+  // TTS state
+  const [playingMessageIdx, setPlayingMessageIdx] = useState<number | null>(null);
+  const [ttsLoading, setTtsLoading] = useState<number | null>(null);
+  const [autoVoice, setAutoVoice] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Microphone recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  // Session end state
+  const [showEndDialog, setShowEndDialog] = useState(false);
+  const [endOutcome, setEndOutcome] = useState<"won" | "partial" | "lost">("partial");
+  const [endNotes, setEndNotes] = useState("");
+  const [sessionStartTime, setSessionStartTime] = useState<number>(0);
+
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const roomRef = useRef<unknown>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch session history
+  // ─── TTS Playback ───────────────────────────────────────────────────────────
+
+  const playTTS = useCallback(async (text: string, messageIdx: number) => {
+    if (playingMessageIdx === messageIdx) {
+      audioRef.current?.pause();
+      audioRef.current = null;
+      setPlayingMessageIdx(null);
+      return;
+    }
+
+    audioRef.current?.pause();
+    setTtsLoading(messageIdx);
+
+    try {
+      const voice = selectedPersona ? getTTSVoice(selectedPersona) : "kazi";
+      const res = await fetch("/api/roleplay/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text.slice(0, 1024), voice }),
+      });
+
+      if (!res.ok) throw new Error("TTS failed");
+
+      const audioBlob = await res.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+      audioRef.current = audio;
+
+      audio.onended = () => {
+        setPlayingMessageIdx(null);
+        URL.revokeObjectURL(audioUrl);
+      };
+
+      setPlayingMessageIdx(messageIdx);
+      setTtsLoading(null);
+      await audio.play();
+    } catch (err) {
+      console.error("TTS playback error:", err);
+      setTtsLoading(null);
+    }
+  }, [playingMessageIdx, selectedPersona]);
+
+  // ─── Microphone Recording ───────────────────────────────────────────────────
+
+  const sendChatMessageWithText = useCallback(async (text: string) => {
+    if (!text.trim() || !selectedPersona || isChatLoading) return;
+    const userMsg = text.trim();
+    setChatMessages(prev => [...prev, { role: "user", content: userMsg, timestamp: Date.now() }]);
+    setIsChatLoading(true);
+
+    try {
+      const res = await fetch("/api/roleplay/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: chatSessionId, message: userMsg, personaId: selectedPersona.id }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setChatMessages(prev => {
+          const newMessages = [...prev, { role: "assistant", content: data.response, timestamp: Date.now() }];
+          if (autoVoice) {
+            const idx = newMessages.length - 1;
+            setTimeout(() => playTTS(data.response, idx), 100);
+          }
+          return newMessages;
+        });
+      } else {
+        setChatMessages(prev => [...prev, { role: "system", content: `Error: ${data.error}`, timestamp: Date.now() }]);
+      }
+    } catch {
+      setChatMessages(prev => [...prev, { role: "system", content: "Connection error. Please try again.", timestamp: Date.now() }]);
+    }
+    setIsChatLoading(false);
+  }, [selectedPersona, isChatLoading, chatSessionId, autoVoice, playTTS]);
+
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+  }, []);
+
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        stream.getTracks().forEach(t => t.stop());
+
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64Audio = (reader.result as string).split(",")[1];
+          if (!base64Audio) return;
+
+          try {
+            const res = await fetch("/api/roleplay/asr", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ audio: base64Audio }),
+            });
+            const data = await res.json();
+            if (data.success && data.text) {
+              setChatInput(data.text);
+              setTimeout(() => {
+                if (data.text.trim()) {
+                  sendChatMessageWithText(data.text.trim());
+                }
+              }, 300);
+            }
+          } catch (err) {
+            console.error("ASR error:", err);
+          }
+        };
+        reader.readAsDataURL(audioBlob);
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+
+      setTimeout(() => {
+        if (mediaRecorderRef.current?.state === "recording") {
+          stopRecording();
+        }
+      }, 30000);
+    } catch (err) {
+      console.error("Microphone access error:", err);
+    }
+  }, [sendChatMessageWithText, stopRecording]);
+
+  // ─── Data Fetching ──────────────────────────────────────────────────────────
+
   const fetchSessions = useCallback(async () => {
     try {
       const res = await fetch("/api/sessions");
@@ -117,7 +317,8 @@ export default function Home() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  // Start TEXT roleplay
+  // ─── Roleplay Actions ───────────────────────────────────────────────────────
+
   const startTextRoleplay = (persona: Persona) => {
     setSelectedPersona(persona);
     setMode("text");
@@ -126,48 +327,30 @@ export default function Home() {
     setCallTimer(0);
     setError(null);
     setSessionNotes("");
+    setSessionStartTime(Date.now());
+    setShowEndDialog(false);
     const sid = `chat-${persona.id}-${Date.now()}`;
     setChatSessionId(sid);
+    const openingMsg = { role: "assistant" as const, content: persona.openingLine, timestamp: Date.now() };
     setChatMessages([
       { role: "system", content: `You are now in a sales roleplay with ${persona.name}.`, timestamp: Date.now() },
-      { role: "assistant", content: persona.openingLine, timestamp: Date.now() },
+      openingMsg,
     ]);
+    // Auto-play TTS for opening line if enabled
+    if (autoVoice) {
+      setTimeout(() => playTTS(persona.openingLine, 1), 300);
+    }
     setTimeout(() => chatInputRef.current?.focus(), 300);
   };
 
-  // Send chat message
   const sendChatMessage = async () => {
     if (!chatInput.trim() || !selectedPersona || isChatLoading) return;
     const userMsg = chatInput.trim();
     setChatInput("");
-    setChatMessages(prev => [...prev, { role: "user", content: userMsg, timestamp: Date.now() }]);
-    setIsChatLoading(true);
-
-    try {
-      const res = await fetch("/api/roleplay/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: chatSessionId,
-          message: userMsg,
-          personaId: selectedPersona.id,
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setChatMessages(prev => [...prev, { role: "assistant", content: data.response, timestamp: Date.now() }]);
-      } else {
-        setChatMessages(prev => [...prev, { role: "system", content: `Error: ${data.error}`, timestamp: Date.now() }]);
-      }
-    } catch (err: unknown) {
-      setChatMessages(prev => [...prev, { role: "system", content: "Connection error. Please try again.", timestamp: Date.now() }]);
-    }
-    setIsChatLoading(false);
-    setCallTimer(prev => prev); // Keep timer running
+    await sendChatMessageWithText(userMsg);
     chatInputRef.current?.focus();
   };
 
-  // Start VOICE roleplay
   const startVoiceRoleplay = async (persona: Persona) => {
     setSelectedPersona(persona);
     setMode("voice");
@@ -178,6 +361,8 @@ export default function Home() {
     setCallTimer(0);
     setConnectionStep(0);
     setSessionNotes("");
+    setSessionStartTime(Date.now());
+    setShowEndDialog(false);
 
     try {
       setConnectionStep(1);
@@ -222,8 +407,13 @@ export default function Home() {
     }
   };
 
-  // End roleplay
   const endRoleplay = async (outcome?: string) => {
+    // Stop any TTS playback
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setPlayingMessageIdx(null);
+    setTtsLoading(null);
+
     try {
       if (roomRef.current) {
         const room = roomRef.current as { disconnect?: () => void };
@@ -245,8 +435,18 @@ export default function Home() {
     }
 
     setRoleplayStatus("ended");
-    setCallTimer(0);
     fetchSessions();
+  };
+
+  const handleEndSession = () => {
+    setShowEndDialog(true);
+  };
+
+  const handleSaveEndSession = async () => {
+    await endRoleplay(endOutcome);
+    setShowEndDialog(false);
+    setView("dashboard");
+    setRoleplayStatus("idle");
   };
 
   const toggleMute = async () => {
@@ -268,6 +468,17 @@ export default function Home() {
     );
   };
 
+  const getPersonaTypeBadge = (personaId: string) => {
+    const type = PERSONA_TYPES[personaId] || "influencer";
+    const config = PERSONA_TYPE_CONFIG[type];
+    return (
+      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${config.color}`}>
+        <span>{config.icon}</span>
+        {config.label}
+      </span>
+    );
+  };
+
   // ─── RENDER: Dashboard ─────────────────────────────────────────────────────
 
   const renderDashboard = () => (
@@ -283,7 +494,7 @@ export default function Home() {
           </div>
           <h1 className="text-3xl md:text-4xl font-bold text-white mb-3">Sales Roleplay Arena</h1>
           <p className="text-slate-300 text-lg max-w-2xl mb-6">
-            Practice your sales pitch against AI-powered buyer personas. Choose text chat for instant practice or voice mode for immersive conversations.
+            Practice your sales pitch against AI-powered buyer personas. Choose text chat with voice playback or live voice calls for immersive conversations.
           </p>
           <div className="flex flex-wrap gap-3">
             <Button size="lg" onClick={() => setView("select")} className="bg-white text-slate-900 hover:bg-slate-100 gap-2">
@@ -337,7 +548,10 @@ export default function Home() {
                         <CardDescription className="text-xs">{persona.title}</CardDescription>
                       </div>
                     </div>
-                    {getDiffBadge(persona.difficulty)}
+                    <div className="flex flex-col gap-1 items-end">
+                      {getDiffBadge(persona.difficulty)}
+                      {getPersonaTypeBadge(persona.id)}
+                    </div>
                   </div>
                 </CardHeader>
                 <CardContent className="pb-3">
@@ -352,8 +566,8 @@ export default function Home() {
                 </CardContent>
                 <CardFooter className="pt-0">
                   <div className="w-full flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground italic">&ldquo;{persona.openingLine}&rdquo;</span>
-                    <ArrowRight className="w-4 h-4 text-muted-foreground group-hover:translate-x-1 transition-transform" />
+                    <span className="text-xs text-muted-foreground italic line-clamp-1">&ldquo;{persona.openingLine}&rdquo;</span>
+                    <ArrowRight className="w-4 h-4 text-muted-foreground group-hover:translate-x-1 transition-transform shrink-0" />
                   </div>
                 </CardFooter>
               </Card>
@@ -367,8 +581,8 @@ export default function Home() {
         <h2 className="text-xl font-semibold mb-4">How It Works</h2>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           {[
-            { step: "1", title: "Choose Persona", desc: "Pick a buyer persona from the UAE market", icon: Users },
-            { step: "2", title: "Start Session", desc: "Text chat instantly or voice call with LiveKit", icon: MessageCircle },
+            { step: "1", title: "Choose Persona", desc: "Pick a buyer persona — decision-maker, gatekeeper, or influencer", icon: Users },
+            { step: "2", title: "Start Session", desc: "Text chat with voice playback or live voice call", icon: MessageCircle },
             { step: "3", title: "Navigate Objections", desc: "Handle real objections and negotiation tactics", icon: Shield },
             { step: "4", title: "Get Feedback", desc: "Rate your performance and track improvement", icon: TrendingUp },
           ].map((item, i) => (
@@ -398,8 +612,8 @@ export default function Home() {
               <ul className="space-y-2 text-sm text-amber-800">
                 <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Listen carefully to the persona&apos;s tone and concerns before pitching</li>
                 <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Ask open-ended questions to uncover hidden pain points</li>
-                <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Match the cultural communication style of each persona</li>
-                <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Hard personas require patience and evidence-based selling</li>
+                <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Use Auto-Voice to hear how the persona sounds — great for practicing tone</li>
+                <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Gatekeepers require a different approach — respect their role and be specific</li>
               </ul>
             </CardContent>
           </Card>
@@ -411,11 +625,14 @@ export default function Home() {
   // ─── RENDER: Persona Selection ──────────────────────────────────────────────
 
   const renderPersonaSelection = () => {
-    const filtered = difficultyFilter === "all" ? PERSONAS : PERSONAS.filter(p => p.difficulty === difficultyFilter);
+    let filtered = difficultyFilter === "all" ? PERSONAS : PERSONAS.filter(p => p.difficulty === difficultyFilter);
+    if (typeFilter !== "all") {
+      filtered = filtered.filter(p => PERSONA_TYPES[p.id] === typeFilter);
+    }
 
     return (
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
             <h2 className="text-2xl font-bold">Choose Your Persona</h2>
             <p className="text-muted-foreground">Select a buyer persona to practice with</p>
@@ -423,13 +640,26 @@ export default function Home() {
           <Button variant="ghost" onClick={() => setView("dashboard")}>Back to Dashboard</Button>
         </div>
 
-        <div className="flex gap-2 flex-wrap">
-          {["all", "easy", "medium", "hard"].map(diff => (
-            <Button key={diff} variant={difficultyFilter === diff ? "default" : "outline"} size="sm" onClick={() => setDifficultyFilter(diff)} className="gap-1">
-              {diff === "all" ? "All" : DIFFICULTY_CONFIG[diff as "easy" | "medium" | "hard"].label}
-              {diff !== "all" && <span className="ml-1 text-xs opacity-70">({PERSONAS.filter(p => p.difficulty === diff).length})</span>}
-            </Button>
-          ))}
+        <div className="flex flex-col gap-3">
+          {/* Difficulty Filter */}
+          <div className="flex gap-2 flex-wrap">
+            <span className="text-xs font-medium text-muted-foreground self-center mr-1">Difficulty:</span>
+            {["all", "easy", "medium", "hard"].map(diff => (
+              <Button key={diff} variant={difficultyFilter === diff ? "default" : "outline"} size="sm" onClick={() => setDifficultyFilter(diff)} className="gap-1">
+                {diff === "all" ? "All" : DIFFICULTY_CONFIG[diff as "easy" | "medium" | "hard"].label}
+                {diff !== "all" && <span className="ml-1 text-xs opacity-70">({PERSONAS.filter(p => p.difficulty === diff).length})</span>}
+              </Button>
+            ))}
+          </div>
+          {/* Type Filter */}
+          <div className="flex gap-2 flex-wrap">
+            <span className="text-xs font-medium text-muted-foreground self-center mr-1">Type:</span>
+            {["all", "decision-maker", "gatekeeper", "influencer"].map(type => (
+              <Button key={type} variant={typeFilter === type ? "default" : "outline"} size="sm" onClick={() => setTypeFilter(type)} className="gap-1">
+                {type === "all" ? "All Types" : `${PERSONA_TYPE_CONFIG[type as keyof typeof PERSONA_TYPE_CONFIG].icon} ${PERSONA_TYPE_CONFIG[type as keyof typeof PERSONA_TYPE_CONFIG].label}`}
+              </Button>
+            ))}
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -446,7 +676,10 @@ export default function Home() {
                           <CardDescription className="text-xs">{persona.title}</CardDescription>
                         </div>
                       </div>
-                      {getDiffBadge(persona.difficulty)}
+                      <div className="flex flex-col gap-1 items-end">
+                        {getDiffBadge(persona.difficulty)}
+                        {getPersonaTypeBadge(persona.id)}
+                      </div>
                     </div>
                   </CardHeader>
                   <CardContent className="pb-3 space-y-3">
@@ -475,7 +708,7 @@ export default function Home() {
                       <MessageCircle className="w-3 h-3" /> Chat
                     </Button>
                     <Button size="sm" variant="outline" className="flex-1 gap-1" onClick={() => startVoiceRoleplay(persona)}>
-                      <Phone className="w-3 h-3" /> Voice
+                      <Phone className="w-3 h-3" /> Voice Call
                     </Button>
                   </CardFooter>
                 </Card>
@@ -483,6 +716,13 @@ export default function Home() {
             ))}
           </AnimatePresence>
         </div>
+
+        {filtered.length === 0 && (
+          <Card><CardContent className="py-8 text-center">
+            <Users className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+            <p className="text-sm text-muted-foreground">No personas match your filters. Try adjusting the difficulty or type filters.</p>
+          </CardContent></Card>
+        )}
       </div>
     );
   };
@@ -513,14 +753,35 @@ export default function Home() {
                         <span className="text-xs font-medium text-muted-foreground">{selectedPersona?.name}</span>
                       </div>
                     )}
+                    {msg.role === "user" && (
+                      <div className="flex items-center gap-1.5 justify-end w-full">
+                        <span className="text-xs font-medium text-muted-foreground">You</span>
+                        <div className="w-6 h-6 rounded-full bg-slate-700 flex items-center justify-center text-sm text-white">🎤</div>
+                      </div>
+                    )}
                   </div>
-                  <div className={`rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
-                    msg.role === "user"
-                      ? "bg-primary text-primary-foreground rounded-br-md"
-                      : "bg-slate-100 text-slate-900 rounded-bl-md"
-                  }`}>
-                    {msg.content}
-                  </div>
+                  {msg.role === "assistant" ? (
+                    <div className="rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap bg-slate-100 text-slate-900 rounded-bl-md relative group">
+                      {msg.content}
+                      <button
+                        onClick={() => playTTS(msg.content, i)}
+                        className="absolute -top-1 -right-1 w-6 h-6 rounded-full bg-white shadow-md flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-slate-50"
+                        title={playingMessageIdx === i ? "Stop voice" : "Play voice"}
+                      >
+                        {ttsLoading === i ? (
+                          <RefreshCw className="w-3 h-3 animate-spin" />
+                        ) : playingMessageIdx === i ? (
+                          <Volume2 className="w-3 h-3 text-emerald-600" />
+                        ) : (
+                          <Volume2 className="w-3 h-3 text-muted-foreground" />
+                        )}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap bg-primary text-primary-foreground rounded-br-md">
+                      {msg.content}
+                    </div>
+                  )}
                 </div>
               )}
             </motion.div>
@@ -544,15 +805,38 @@ export default function Home() {
       </ScrollArea>
 
       {/* Chat Input */}
-      <div className="flex gap-2">
+      <div className="flex gap-2 items-end">
+        {/* Microphone button */}
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={isRecording ? "destructive" : "outline"}
+                size="icon"
+                onClick={isRecording ? stopRecording : startRecording}
+                className="shrink-0"
+              >
+                {isRecording ? (
+                  <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ duration: 0.8, repeat: Infinity }}>
+                    <MicOff className="w-4 h-4" />
+                  </motion.div>
+                ) : (
+                  <Mic className="w-4 h-4" />
+                )}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{isRecording ? "Stop recording" : "Voice input"}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+
         <div className="flex-1 relative">
           <Input
             ref={chatInputRef}
             value={chatInput}
             onChange={e => setChatInput(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }}
-            placeholder="Type your sales pitch..."
-            disabled={isChatLoading}
+            placeholder={isRecording ? "Listening..." : "Type your sales pitch..."}
+            disabled={isChatLoading || isRecording}
             className="pr-10"
           />
           <Button
@@ -564,7 +848,8 @@ export default function Home() {
             <Send className="w-3.5 h-3.5" />
           </Button>
         </div>
-        <Button variant="destructive" size="icon" onClick={() => endRoleplay("partial")} title="End session">
+
+        <Button variant="destructive" size="icon" onClick={handleEndSession} title="End session">
           <PhoneOff className="w-4 h-4" />
         </Button>
       </div>
@@ -640,9 +925,9 @@ export default function Home() {
                   {isMuted ? <MicOff className="w-6 h-6 text-red-500" /> : <Mic className="w-6 h-6" />}
                 </Button>
               </TooltipTrigger><TooltipContent>{isMuted ? "Unmute" : "Mute"}</TooltipContent></Tooltip></TooltipProvider>
-              <Button variant="destructive" size="lg" className="w-14 h-14 rounded-full" onClick={() => endRoleplay("lost")}><PhoneOff className="w-6 h-6" /></Button>
+              <Button variant="destructive" size="lg" className="w-14 h-14 rounded-full" onClick={handleEndSession}><PhoneOff className="w-6 h-6" /></Button>
             </div>
-            <p className="text-center text-xs text-muted-foreground">{isMuted ? "🔇 Microphone muted" : "🎤 Speak naturally"}</p>
+            <p className="text-center text-xs text-muted-foreground">{isMuted ? "Microphone muted" : "Speak naturally"}</p>
           </div>
         )}
 
@@ -679,11 +964,11 @@ export default function Home() {
   const renderRoleplay = () => (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="sm" onClick={() => {
             if (roleplayStatus === "active" || roleplayStatus === "connected") {
-              if (confirm("End the current session?")) endRoleplay("abandoned");
+              if (confirm("End the current session?")) handleEndSession();
             }
             setView("dashboard"); setRoleplayStatus("idle");
           }}>Back</Button>
@@ -697,14 +982,29 @@ export default function Home() {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {getDiffBadge(selectedPersona?.difficulty || "medium")}
+          {selectedPersona && getPersonaTypeBadge(selectedPersona.id)}
           <Badge variant={mode === "text" ? "default" : "outline"} className="gap-1">
             {mode === "text" ? <><Type className="w-3 h-3" /> Chat</> : <><Phone className="w-3 h-3" /> Voice</>}
           </Badge>
           {roleplayStatus === "active" && (
             <div className="flex items-center gap-1 text-sm font-mono text-muted-foreground">
               <Clock className="w-3.5 h-3.5" />{formatTime(callTimer)}
+            </div>
+          )}
+          {/* Auto-Voice Toggle - only show in text chat mode */}
+          {mode === "text" && roleplayStatus === "active" && (
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+                <Volume2 className="w-3.5 h-3.5" />
+                Auto-Voice
+                <Switch
+                  checked={autoVoice}
+                  onCheckedChange={setAutoVoice}
+                  className="scale-75"
+                />
+              </label>
             </div>
           )}
         </div>
@@ -725,6 +1025,9 @@ export default function Home() {
                 <div className="text-3xl mb-1">{selectedPersona?.avatar}</div>
                 <div className="font-semibold">{selectedPersona?.name}</div>
                 <div className="text-xs text-muted-foreground">{selectedPersona?.nationality} · Age {selectedPersona?.age}</div>
+                {selectedPersona && (
+                  <div className="mt-2">{getPersonaTypeBadge(selectedPersona.id)}</div>
+                )}
               </div>
               <Separator />
               <div>
@@ -778,37 +1081,100 @@ export default function Home() {
               </ScrollArea>
             </CardContent>
           </Card>
-
-          {/* Session End Actions */}
-          {roleplayStatus === "ended" && (
-            <Card className="border-emerald-200">
-              <CardHeader className="pb-2"><CardTitle className="text-sm">Session Complete</CardTitle></CardHeader>
-              <CardContent className="space-y-3">
-                <div className="flex gap-2">
-                  {["won", "partial", "lost"].map(outcome => (
-                    <Button key={outcome} variant="outline" size="sm" onClick={() => endRoleplay(outcome)} className={`flex-1 gap-1 text-xs ${
-                      outcome === "won" ? "hover:bg-emerald-50 hover:text-emerald-700" :
-                      outcome === "lost" ? "hover:bg-red-50 hover:text-red-700" : ""
-                    }`}>
-                      {outcome === "won" ? <CheckCircle2 className="w-3 h-3" /> : outcome === "lost" ? <XCircle className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
-                      {outcome.charAt(0).toUpperCase() + outcome.slice(1)}
-                    </Button>
-                  ))}
-                </div>
-                <Textarea placeholder="Session notes..." value={sessionNotes} onChange={e => setSessionNotes(e.target.value)} rows={2} />
-                <div className="flex gap-2">
-                  <Button variant="outline" onClick={() => { setView("dashboard"); setRoleplayStatus("idle"); }} className="flex-1">Dashboard</Button>
-                  <Button onClick={() => selectedPersona && (mode === "text" ? startTextRoleplay(selectedPersona) : startVoiceRoleplay(selectedPersona))} className="flex-1 gap-1">
-                    <RefreshCw className="w-3 h-3" /> Retry
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          )}
         </div>
       </div>
     </div>
   );
+
+  // ─── RENDER: Session End Dialog ─────────────────────────────────────────────
+
+  const renderEndDialog = () => {
+    const duration = sessionStartTime ? Math.round((Date.now() - sessionStartTime) / 1000) : callTimer;
+    const messageCount = chatMessages.filter(m => m.role === "user" || m.role === "assistant").length;
+
+    return (
+      <Dialog open={showEndDialog} onOpenChange={setShowEndDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Award className="w-5 h-5 text-amber-500" />
+              Session Complete
+            </DialogTitle>
+            <DialogDescription>
+              Rate your performance in this roleplay session
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {/* Session Stats */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-lg bg-slate-50 p-3 text-center">
+                <Clock className="w-4 h-4 text-muted-foreground mx-auto mb-1" />
+                <div className="text-lg font-bold">{formatTime(duration)}</div>
+                <div className="text-xs text-muted-foreground">Duration</div>
+              </div>
+              <div className="rounded-lg bg-slate-50 p-3 text-center">
+                <MessageCircle className="w-4 h-4 text-muted-foreground mx-auto mb-1" />
+                <div className="text-lg font-bold">{messageCount}</div>
+                <div className="text-xs text-muted-foreground">Messages</div>
+              </div>
+            </div>
+
+            {/* Persona Info */}
+            {selectedPersona && (
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-50">
+                <div className="text-2xl">{selectedPersona.avatar}</div>
+                <div>
+                  <div className="font-medium text-sm">{selectedPersona.name}</div>
+                  <div className="text-xs text-muted-foreground">{selectedPersona.title} · {selectedPersona.company}</div>
+                </div>
+              </div>
+            )}
+
+            {/* Outcome Selector */}
+            <div>
+              <label className="text-sm font-medium mb-2 block">Outcome</label>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { key: "won" as const, label: "Won", icon: CheckCircle2, color: "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100", activeColor: "border-emerald-500 bg-emerald-100 text-emerald-800 ring-2 ring-emerald-500" },
+                  { key: "partial" as const, label: "Partial", icon: Pause, color: "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100", activeColor: "border-amber-500 bg-amber-100 text-amber-800 ring-2 ring-amber-500" },
+                  { key: "lost" as const, label: "Lost", icon: XCircle, color: "border-red-200 bg-red-50 text-red-700 hover:bg-red-100", activeColor: "border-red-500 bg-red-100 text-red-800 ring-2 ring-red-500" },
+                ]).map(outcome => (
+                  <button
+                    key={outcome.key}
+                    onClick={() => setEndOutcome(outcome.key)}
+                    className={`flex flex-col items-center gap-1 p-3 rounded-lg border-2 transition-all cursor-pointer ${
+                      endOutcome === outcome.key ? outcome.activeColor : outcome.color
+                    }`}
+                  >
+                    <outcome.icon className="w-5 h-5" />
+                    <span className="text-xs font-medium">{outcome.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Notes */}
+            <div>
+              <label className="text-sm font-medium mb-2 block">Notes (optional)</label>
+              <Textarea
+                placeholder="What went well? What could you improve?"
+                value={endNotes}
+                onChange={e => setEndNotes(e.target.value)}
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setShowEndDialog(false)}>Cancel</Button>
+            <Button onClick={handleSaveEndSession} className="gap-2">
+              <CheckCircle2 className="w-4 h-4" />
+              Save & Return
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  };
 
   // ─── RENDER: Session History ────────────────────────────────────────────────
 
@@ -852,6 +1218,7 @@ export default function Home() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {persona && getPersonaTypeBadge(persona.id)}
                 {session.outcome === "won" && <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200">Won</Badge>}
                 {session.outcome === "lost" && <Badge className="bg-red-100 text-red-700 border-red-200">Lost</Badge>}
                 {session.outcome === "partial" && <Badge className="bg-amber-100 text-amber-700 border-amber-200">Partial</Badge>}
@@ -904,13 +1271,17 @@ export default function Home() {
       <footer className="mt-auto border-t bg-background">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <div className="flex items-center gap-2"><Headphones className="w-4 h-4" /><span>Sales Roleplay Arena — LiveKit + Deepgram + AI</span></div>
+            <div className="flex items-center gap-2"><Headphones className="w-4 h-4" /><span>Sales Roleplay Arena — AI + TTS + ASR</span></div>
             <div className="flex items-center gap-3">
               <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />{PERSONAS.length} Personas</span>
+              <span className="flex items-center gap-1"><Volume2 className="w-3 h-3" />Voice Chat</span>
             </div>
           </div>
         </div>
       </footer>
+
+      {/* Session End Dialog */}
+      {renderEndDialog()}
     </div>
   );
 }
