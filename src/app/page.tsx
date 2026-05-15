@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Mic, MicOff, Phone, PhoneOff, BarChart3, Users, Target,
@@ -488,11 +489,14 @@ export default function Home() {
         className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-8 md:p-12">
         <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHZpZXdCb3g9IjAgMCA0MCA0MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxjaXJjbGUgY3g9IjIwIiBjeT0iMjAiIHI9IjEiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC4wNSkiLz48L2c+PC9zdmc+')] opacity-50" />
         <div className="relative z-10">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 rounded-lg bg-white/10"><Headphones className="w-6 h-6 text-white" /></div>
-            <Badge variant="secondary" className="bg-white/10 text-white hover:bg-white/20 border-white/20">AI-Powered</Badge>
+          <div className="flex items-center gap-4 mb-4">
+            <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={56} height={56} className="rounded-lg drop-shadow-lg" />
+            <div className="flex flex-col">
+              <Badge variant="secondary" className="bg-white/10 text-white hover:bg-white/20 border-white/20 w-fit mb-1">AI-Powered</Badge>
+              <span className="text-white/60 text-xs tracking-widest uppercase">Sales Roleplay Arena</span>
+            </div>
           </div>
-          <h1 className="text-3xl md:text-4xl font-bold text-white mb-3">Sales Roleplay Arena</h1>
+          <h1 className="text-3xl md:text-4xl font-bold text-white mb-3">SGC TECH <span className="text-white/60 font-normal">Roleplay Arena</span></h1>
           <p className="text-slate-300 text-lg max-w-2xl mb-6">
             Practice your sales pitch against AI-powered buyer personas. Choose text chat with voice playback or live voice calls for immersive conversations.
           </p>
@@ -981,6 +985,10 @@ export default function Home() {
               </div>
             </div>
           )}
+          <div className="hidden sm:flex items-center gap-1.5 ml-2 px-2 py-1 rounded-md bg-slate-50 border border-slate-200">
+            <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={16} height={16} className="rounded-sm" />
+            <span className="text-[10px] font-semibold text-slate-500 tracking-wide">SGC TECH</span>
+          </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {getDiffBadge(selectedPersona?.difficulty || "medium")}
@@ -1238,9 +1246,12 @@ export default function Home() {
       <header className="sticky top-0 z-50 bg-background/80 backdrop-blur-sm border-b">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-14">
-            <div className="flex items-center gap-2 cursor-pointer" onClick={() => { setView("dashboard"); setRoleplayStatus("idle"); }}>
-              <Headphones className="w-5 h-5 text-primary" />
-              <span className="font-bold text-lg">RoleplayArena</span>
+            <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => { setView("dashboard"); setRoleplayStatus("idle"); }}>
+              <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={32} height={32} className="rounded" />
+              <div className="flex flex-col leading-tight">
+                <span className="font-bold text-sm tracking-wide">SGC TECH</span>
+                <span className="text-[10px] text-muted-foreground -mt-0.5">Sales Roleplay Arena</span>
+              </div>
             </div>
             <nav className="flex items-center gap-1">
               {[
@@ -1268,11 +1279,17 @@ export default function Home() {
         </AnimatePresence>
       </main>
 
-      <footer className="mt-auto border-t bg-background">
+      <footer className="mt-auto border-t bg-slate-900 text-white">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <div className="flex items-center gap-2"><Headphones className="w-4 h-4" /><span>Sales Roleplay Arena — AI + TTS + ASR</span></div>
-            <div className="flex items-center gap-3">
+          <div className="flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2.5">
+              <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={24} height={24} className="rounded" />
+              <div className="flex flex-col leading-tight">
+                <span className="font-semibold text-white">SGC TECH</span>
+                <span className="text-slate-400">Sales Roleplay Arena — AI + TTS + ASR</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 text-slate-400">
               <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />{PERSONAS.length} Personas</span>
               <span className="flex items-center gap-1"><Volume2 className="w-3 h-3" />Voice Chat</span>
             </div>
