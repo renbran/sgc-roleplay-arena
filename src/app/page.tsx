@@ -66,6 +66,24 @@ function getTTSVoice(persona: Persona): string {
   return TTS_VOICE_MAP[persona.voiceId] || "kazi";
 }
 
+// ─── Avatar Component ────────────────────────────────────────────────────────
+
+function PersonaAvatar({ src, alt, size = "md" }: { src: string; alt: string; size?: "xs" | "sm" | "md" | "lg" | "xl" }) {
+  const sizeMap = {
+    xs: { container: "w-5 h-5", img: 20 },
+    sm: { container: "w-6 h-6", img: 24 },
+    md: { container: "w-10 h-10", img: 40 },
+    lg: { container: "w-12 h-12", img: 48 },
+    xl: { container: "w-28 h-28", img: 112 },
+  };
+  const s = sizeMap[size];
+  return (
+    <div className={`${s.container} rounded-full overflow-hidden bg-gradient-to-br from-slate-100 to-slate-200 shrink-0`}>
+      <Image src={src} alt={alt} width={s.img} height={s.img} className="w-full h-full object-cover" />
+    </div>
+  );
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type AppView = "dashboard" | "select" | "roleplay" | "history";
@@ -546,7 +564,7 @@ export default function Home() {
                 <CardHeader className="pb-3">
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="text-3xl">{persona.avatar}</div>
+                      <PersonaAvatar src={persona.avatar} alt={persona.name} size="lg" />
                       <div>
                         <CardTitle className="text-base group-hover:text-primary transition-colors">{persona.name}</CardTitle>
                         <CardDescription className="text-xs">{persona.title}</CardDescription>
@@ -674,7 +692,7 @@ export default function Home() {
                   <CardHeader className="pb-3">
                     <div className="flex items-start justify-between">
                       <div className="flex items-center gap-3">
-                        <div className="text-4xl">{persona.avatar}</div>
+                        <PersonaAvatar src={persona.avatar} alt={persona.name} size="lg" />
                         <div>
                           <CardTitle className="text-base group-hover:text-primary transition-colors">{persona.name}</CardTitle>
                           <CardDescription className="text-xs">{persona.title}</CardDescription>
@@ -753,7 +771,7 @@ export default function Home() {
                   <div className="flex items-center gap-2 mb-1">
                     {msg.role === "assistant" && (
                       <div className="flex items-center gap-1.5">
-                        <div className="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center text-sm">{selectedPersona?.avatar}</div>
+                        <PersonaAvatar src={selectedPersona?.avatar || "/avatars/p1_faisal.png"} alt={selectedPersona?.name || "Persona"} size="sm" />
                         <span className="text-xs font-medium text-muted-foreground">{selectedPersona?.name}</span>
                       </div>
                     )}
@@ -793,7 +811,7 @@ export default function Home() {
           {isChatLoading && (
             <div className="flex justify-start">
               <div className="flex items-center gap-2">
-                <div className="w-6 h-6 rounded-full bg-slate-100 flex items-center justify-center text-sm">{selectedPersona?.avatar}</div>
+                <PersonaAvatar src={selectedPersona?.avatar || "/avatars/p1_faisal.png"} alt={selectedPersona?.name || "Persona"} size="sm" />
                 <div className="bg-slate-100 rounded-2xl rounded-bl-md px-4 py-3">
                   <div className="flex gap-1">
                     <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ duration: 1.2, repeat: Infinity, delay: 0 }} className="w-2 h-2 bg-slate-400 rounded-full" />
@@ -903,7 +921,7 @@ export default function Home() {
           <div className="space-y-6 py-8">
             <div className="flex justify-center">
               <motion.div animate={{ scale: isAudioPlaying ? [1, 1.05, 1] : 1 }} transition={{ duration: 0.5, repeat: isAudioPlaying ? Infinity : 0 }} className="relative">
-                <div className="w-28 h-28 rounded-full bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center text-5xl">{selectedPersona?.avatar}</div>
+                <PersonaAvatar src={selectedPersona?.avatar || "/avatars/p1_faisal.png"} alt={selectedPersona?.name || "Persona"} size="xl" />
                 {isAudioPlaying && (
                   <>
                     <motion.div animate={{ scale: [1, 1.5], opacity: [0.3, 0] }} transition={{ duration: 1.5, repeat: Infinity }} className="absolute inset-0 rounded-full border-2 border-emerald-400" />
@@ -1030,7 +1048,7 @@ export default function Home() {
             <CardHeader className="pb-3"><CardTitle className="text-sm">Persona Profile</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               <div className="text-center">
-                <div className="text-3xl mb-1">{selectedPersona?.avatar}</div>
+                <PersonaAvatar src={selectedPersona?.avatar || "/avatars/p1_faisal.png"} alt={selectedPersona?.name || "Persona"} size="md" />
                 <div className="font-semibold">{selectedPersona?.name}</div>
                 <div className="text-xs text-muted-foreground">{selectedPersona?.nationality} · Age {selectedPersona?.age}</div>
                 {selectedPersona && (

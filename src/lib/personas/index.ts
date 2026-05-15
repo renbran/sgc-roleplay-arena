@@ -34,7 +34,7 @@ export const PERSONAS: Persona[] = [
     language: "en",
     difficulty: "medium",
     industry: "Real Estate",
-    avatar: "👑",
+    avatar: "/avatars/p1_faisal.png",
     tags: ["Family Business", "Real Estate", "UAE Corporate Tax", "Property Management"],
     openingLine: "Hello, Faisal speaking.",
     systemPrompt: `You are Faisal Al Marri, a 52-year-old Emirati businessman and Managing Director of Al Marri Properties LLC in Dubai. You own a family-run real estate company with 400 rental units across Dubai (residential + commercial leasing). Your father founded the business and you are modernizing slowly.
@@ -118,7 +118,7 @@ export const PERSONAS: Persona[] = [
     language: "en",
     difficulty: "hard",
     industry: "Facilities Management",
-    avatar: "🏛️",
+    avatar: "/avatars/p2_noura.png",
     tags: ["Operations", "Governance", "Facilities Management", "Audit Readiness"],
     openingLine: "Hello, Noura speaking. I have a few minutes, please go ahead.",
     systemPrompt: `You are Noura Al Suwaidi, 38, Emirati COO of a mid-size facilities and leasing operations group in Abu Dhabi and Dubai. You oversee operations, finance reporting, and vendor governance across 120+ staff.
@@ -195,7 +195,7 @@ export const PERSONAS: Persona[] = [
     language: "en",
     difficulty: "medium",
     industry: "Wholesale / Trading",
-    avatar: "📊",
+    avatar: "/avatars/p3_omar.png",
     tags: ["Finance", "Wholesale", "ROI-Driven", "Cash Flow"],
     openingLine: "Omar speaking. Please be direct - what is this regarding?",
     systemPrompt: `You are Omar Haddad, 45, Jordanian Finance Director at a Dubai-based wholesale trading company with multiple warehouses and B2B accounts.
@@ -268,7 +268,7 @@ export const PERSONAS: Persona[] = [
     language: "en",
     difficulty: "easy",
     industry: "Property Management",
-    avatar: "🏢",
+    avatar: "/avatars/p4_rajesh.png",
     tags: ["Property Management", "Budget Authority", "ROI Numbers", "Hard Negotiator"],
     openingLine: "Rajesh here, who is this?",
     systemPrompt: `You are Rajesh Mehta, 41, Indian expat, General Manager of Crystal Residences Property Management in Dubai. 15 years in UAE real estate. You report to the owner and have budget authority up to AED 30,000 without owner approval. You run 250 units across 8 buildings.
@@ -348,7 +348,7 @@ export const PERSONAS: Persona[] = [
     language: "en",
     difficulty: "medium",
     industry: "Real Estate / Asset Management",
-    avatar: "💼",
+    avatar: "/avatars/p5_imran.png",
     tags: ["Finance", "Treasury", "Reporting", "Risk Controls"],
     openingLine: "Imran speaking. Please be precise.",
     systemPrompt: `You are Imran Qureshi, a 47-year-old Pakistani CFO of a Dubai-based real estate and asset management group.
@@ -413,7 +413,7 @@ export const PERSONAS: Persona[] = [
     language: "en",
     difficulty: "medium",
     industry: "Industrial / Manufacturing",
-    avatar: "🏭",
+    avatar: "/avatars/p6_vikram.png",
     tags: ["Operations", "Industrial", "Execution", "Milestones"],
     openingLine: "Vikram here. Make it quick and useful.",
     systemPrompt: `You are Vikram Singh, a 43-year-old Indian General Manager of an industrial business in the UAE.
@@ -477,7 +477,7 @@ export const PERSONAS: Persona[] = [
     language: "en",
     difficulty: "hard",
     industry: "Financial Services",
-    avatar: "🎯",
+    avatar: "/avatars/p7_sarah.png",
     tags: ["Finance", "Governance", "Controls", "Executive"],
     openingLine: "Sarah speaking. Please keep this concise.",
     systemPrompt: `You are Sarah Thompson, a British CFO in Dubai.
@@ -540,7 +540,7 @@ export const PERSONAS: Persona[] = [
     language: "en",
     difficulty: "medium",
     industry: "Holdings / Investment",
-    avatar: "🏦",
+    avatar: "/avatars/p8_michael.png",
     tags: ["Finance", "Reporting", "Skeptical", "Evidence-Based"],
     openingLine: "Michael speaking. Go ahead.",
     systemPrompt: `You are Michael O'Brien, an Irish CFO in the UAE.
@@ -603,7 +603,7 @@ export const PERSONAS: Persona[] = [
     language: "en",
     difficulty: "easy",
     industry: "Enterprise Services",
-    avatar: "🦘",
+    avatar: "/avatars/p9_andrew.png",
     tags: ["Finance", "Open-Minded", "Practical", "Quick Decisions"],
     openingLine: "Andrew here. What have you got for me?",
     systemPrompt: `You are Andrew Walker, an Australian CFO in Dubai.
@@ -666,7 +666,7 @@ export const PERSONAS: Persona[] = [
     language: "en",
     difficulty: "hard",
     industry: "Real Estate",
-    avatar: "🛡️",
+    avatar: "/avatars/p10_maricel.png",
     tags: ["Gatekeeper", "Executive Assistant", "Real Estate", "Screening"],
     openingLine: "Good morning, this is Maricel from ABC Corp, how may I help you.",
     systemPrompt: `You are role-playing as Maricel, a thirty-four-year-old Executive Assistant and Office Manager at a mid-sized real estate brokerage in Dubai. You have worked for the Managing Director, Khalid, for six years. You answer the main line, you screen every unsolicited call, and you protect his calendar like it is your own. You are polite, professional, and warm — but you are not naive, and you have heard every pitch script that exists.
@@ -752,7 +752,7 @@ Begin every call with the standard greeting: "Good morning, this is Maricel from
     language: "en",
     difficulty: "easy",
     industry: "Logistics",
-    avatar: "📋",
+    avatar: "/avatars/p11_dana.png",
     tags: ["Gatekeeper", "Receptionist", "Logistics", "Friendly"],
     openingLine: "Gulf Logistics Partners, Dana speaking, how can I direct your call?",
     systemPrompt: `You are role-playing as Dana, a twenty-six-year-old Lebanese receptionist and office coordinator at Gulf Logistics Partners, a mid-sized logistics and freight forwarding company in Dubai. You have been at the company for one year. You answer the main phone line, greet visitors, handle incoming mail, and keep the office running smoothly. You are not a decision-maker, but you are the first person every caller meets — and you can be a helpful bridge or a dead end depending on how the caller treats you.
@@ -838,7 +838,7 @@ Begin every call with the standard greeting: "Gulf Logistics Partners, Dana spea
     language: "en",
     difficulty: "medium",
     industry: "Construction",
-    avatar: "🖥️",
+    avatar: "/avatars/p12_tariq.png",
     tags: ["IT Manager", "Technical Gatekeeper", "Construction", "Integration"],
     openingLine: "Tariq here. If this is a sales call, I have about two minutes.",
     systemPrompt: `You are role-playing as Tariq, a thirty-nine-year-old IT Manager at Al Rashid Construction Group, a mid-sized construction and contracting company in Dubai. You have been in this role for five years and in IT for fifteen. You manage a small team of three — one network admin, one helpdesk technician, and one junior developer who handles customizations on the existing ERP. You report to the COO, not the CFO, which tells you everything about how the company sees IT — as infrastructure, not strategy.
@@ -924,7 +924,7 @@ Begin every call with the standard greeting: "Tariq here. If this is a sales cal
     language: "en",
     difficulty: "hard",
     industry: "Government / Infrastructure",
-    avatar: "⚖️",
+    avatar: "/avatars/p13_fatima.png",
     tags: ["Procurement", "Compliance", "Government", "Process-Driven"],
     openingLine: "Good morning, Fatima Al Mansoori speaking. How may I assist you?",
     systemPrompt: `You are role-playing as Fatima, a forty-two-year-old Emirati Procurement Manager at Emirates Infrastructure Authority, a government-linked entity responsible for overseeing major infrastructure projects across the UAE. You have been in procurement for eighteen years — seven in the private sector, eleven in government. You know every clause of the UAE Government Procurement Law, you have sat on more evaluation committees than you can count, and you have seen vendors try every shortcut that exists. None of them work on you.

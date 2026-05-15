@@ -208,3 +208,39 @@ Stage Summary:
 - Header, hero, roleplay session, and footer all display the SGC TECH logo
 - Dark-themed footer reinforces the tech branding
 - Zero lint errors, dev server running smoothly
+
+---
+Task ID: 9
+Agent: Main
+Task: Generate professional AI avatar photos for all 13 personas
+
+Work Log:
+- Generated 13 realistic professional corporate headshot photos using z-ai image generation CLI
+- Each avatar tailored to the persona's age, nationality, role, and industry:
+  - p1_faisal: 52yo Emirati man in white kandura, Managing Director
+  - p2_noura: 38yo Emirati woman in hijab, COO
+  - p3_omar: 45yo Jordanian man in navy suit, Finance Director
+  - p4_rajesh: 41yo Indian man in business casual, General Manager
+  - p5_imran: 47yo Pakistani man in dark suit, CFO
+  - p6_vikram: 43yo Indian man with beard in blazer, General Manager
+  - p7_sarah: 44yo British blonde woman in navy blazer, CFO
+  - p8_michael: 49yo Irish man with reddish-brown hair, CFO
+  - p9_andrew: 46yo Australian man with sandy hair, CFO
+  - p10_maricel: 34yo Filipino woman, Executive Assistant
+  - p11_dana: 26yo Lebanese woman with dark hair, Receptionist
+  - p12_tariq: 39yo Pakistani man in polo shirt, IT Manager
+  - p13_fatima: 42yo Emirati woman in hijab, Procurement Manager
+- All images saved to public/avatars/ as 864x1152 portrait PNG files
+- Updated persona data (src/lib/personas/index.ts) to use image paths instead of emoji strings
+- Created PersonaAvatar component with 5 size variants (xs/sm/md/lg/xl) using next/image
+- Updated all 6 avatar rendering locations in page.tsx to use PersonaAvatar component
+- Avatar locations: Quick Start cards, Persona Selection grid, Chat messages, Loading indicator, Voice call display, Persona Profile card
+- Lint passes with zero errors
+- Dev server running without issues
+
+Stage Summary:
+- 13 professional AI-generated avatar photos created and deployed
+- All emojis replaced with realistic corporate headshot photos
+- PersonaAvatar reusable component handles all size variants
+- Consistent circular avatar styling with gradient background fallback
+- Zero lint errors, dev server running smoothly
