@@ -10,7 +10,7 @@ import {
   ArrowRight, RefreshCw, Volume2, VolumeX,
   Info, Sparkles, Headphones, MessageSquare, Award,
   BookOpen, Play, StopCircle, Pause, Send, Type,
-  MessageCircle, Bot, CornerDownLeft
+  MessageCircle, Bot, CornerDownLeft, Lock, Eye, EyeOff, LogOut
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +24,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { PERSONAS, DIFFICULTY_CONFIG, type Persona } from "@/lib/personas";
+
+// ─── Auth Config ────────────────────────────────────────────────────────────
+
+const AUTH_STORAGE_KEY = "sgc-roleplay-auth";
+const APP_PASSWORD = "SGC2025"; // Change this to your desired password
 
 // ─── Persona Type Mapping ────────────────────────────────────────────────────
 
@@ -49,21 +54,22 @@ const PERSONA_TYPE_CONFIG = {
   "influencer": { label: "Influencer", color: "bg-sky-100 text-sky-700 border-sky-200", icon: "🎯" },
 } as const;
 
-// ─── TTS Voice Mapping ───────────────────────────────────────────────────────
+// ─── Deepgram Voice Mapping ─────────────────────────────────────────────────
 
-const TTS_VOICE_MAP: Record<string, string> = {
-  "aura-2-cora-en": "kazi",
-  "aura-2-amalthea-en": "kazi",
-  "aura-2-orion-en": "jam",
-  "aura-2-apollo-en": "jam",
-  "aura-2-arcas-en": "kazi",
-  "aura-2-luna-en": "tongtong",
-  "aura-2-helios-en": "jam",
-  "aura-2-atlas-en": "jam",
+// Maps persona voiceId to Deepgram Aura-2 voice model
+const DEEPGRAM_VOICE_MAP: Record<string, string> = {
+  "aura-2-cora-en": "aura-2-cora-en",       // Female - warm, professional
+  "aura-2-amalthea-en": "aura-2-amalthea-en", // Female - clear, composed
+  "aura-2-orion-en": "aura-2-orion-en",       // Male - deep, authoritative
+  "aura-2-apollo-en": "aura-2-apollo-en",     // Male - confident
+  "aura-2-arcas-en": "aura-2-arcas-en",       // Male - measured
+  "aura-2-luna-en": "aura-2-luna-en",         // Female - calm
+  "aura-2-helios-en": "aura-2-helios-en",     // Male - friendly
+  "aura-2-atlas-en": "aura-2-atlas-en",       // Male - direct
 };
 
-function getTTSVoice(persona: Persona): string {
-  return TTS_VOICE_MAP[persona.voiceId] || "kazi";
+function getDeepgramVoice(persona: Persona): string {
+  return DEEPGRAM_VOICE_MAP[persona.voiceId] || "aura-2-cora-en";
 }
 
 // ─── Avatar Component ────────────────────────────────────────────────────────
@@ -88,7 +94,7 @@ function PersonaAvatar({ src, alt, size = "md" }: { src: string; alt: string; si
 
 type AppView = "dashboard" | "select" | "roleplay" | "history";
 type RoleplayMode = "text" | "voice";
-type RoleplayStatus = "idle" | "connecting" | "connected" | "active" | "ended" | "error";
+type RoleplayStatus = "idle" | "active" | "ended" | "error";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -111,18 +117,18 @@ interface SessionRecord {
 // ─── Main App ────────────────────────────────────────────────────────────────
 
 export default function Home() {
+  // Auth state
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+
   const [view, setView] = useState<AppView>("dashboard");
   const [selectedPersona, setSelectedPersona] = useState<Persona | null>(null);
   const [mode, setMode] = useState<RoleplayMode>("text");
   const [roleplayStatus, setRoleplayStatus] = useState<RoleplayStatus>("idle");
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [token, setToken] = useState<string | null>(null);
-  const [roomName, setRoomName] = useState<string | null>(null);
-  const [wsUrl, setWsUrl] = useState<string | null>(null);
-  const [identity, setId] = useState<string | null>(null);
-  const [isMuted, setIsMuted] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [dispatchError, setDispatchError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [difficultyFilter, setDifficultyFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
@@ -130,7 +136,6 @@ export default function Home() {
   const [sessionNotes, setSessionNotes] = useState("");
   const [callTimer, setCallTimer] = useState(0);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
-  const [connectionStep, setConnectionStep] = useState(0);
 
   // Text chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -156,9 +161,33 @@ export default function Home() {
   const [sessionStartTime, setSessionStartTime] = useState<number>(0);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const roomRef = useRef<unknown>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  const chatInputRef = useRef<HTMLInputElement>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
+
+  // ─── Auth Check ────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const stored = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (stored === "true") {
+      setIsAuthenticated(true);
+    }
+  }, []);
+
+  const handleLogin = () => {
+    if (authPassword === APP_PASSWORD) {
+      setIsAuthenticated(true);
+      localStorage.setItem(AUTH_STORAGE_KEY, "true");
+      setAuthError("");
+    } else {
+      setAuthError("Invalid password. Please try again.");
+    }
+  };
+
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    setAuthPassword("");
+  };
 
   // ─── TTS Playback ───────────────────────────────────────────────────────────
 
@@ -174,11 +203,11 @@ export default function Home() {
     setTtsLoading(messageIdx);
 
     try {
-      const voice = selectedPersona ? getTTSVoice(selectedPersona) : "kazi";
+      const voice = selectedPersona ? getDeepgramVoice(selectedPersona) : "aura-2-cora-en";
       const res = await fetch("/api/roleplay/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: text.slice(0, 1024), voice }),
+        body: JSON.stringify({ text: text.slice(0, 2000), voice }),
       });
 
       if (!res.ok) throw new Error("TTS failed");
@@ -190,15 +219,18 @@ export default function Home() {
 
       audio.onended = () => {
         setPlayingMessageIdx(null);
+        setIsAudioPlaying(false);
         URL.revokeObjectURL(audioUrl);
       };
 
       setPlayingMessageIdx(messageIdx);
+      setIsAudioPlaying(true);
       setTtsLoading(null);
       await audio.play();
     } catch (err) {
       console.error("TTS playback error:", err);
       setTtsLoading(null);
+      setIsAudioPlaying(false);
     }
   }, [playingMessageIdx, selectedPersona]);
 
@@ -310,8 +342,8 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    fetchSessions();
-  }, [fetchSessions]);
+    if (isAuthenticated) fetchSessions();
+  }, [fetchSessions, isAuthenticated]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -355,11 +387,33 @@ export default function Home() {
       { role: "system", content: `You are now in a sales roleplay with ${persona.name}.`, timestamp: Date.now() },
       openingMsg,
     ]);
-    // Auto-play TTS for opening line if enabled
     if (autoVoice) {
       setTimeout(() => playTTS(persona.openingLine, 1), 300);
     }
     setTimeout(() => chatInputRef.current?.focus(), 300);
+  };
+
+  const startVoiceRoleplay = (persona: Persona) => {
+    setSelectedPersona(persona);
+    setMode("voice");
+    setView("roleplay");
+    setRoleplayStatus("active");
+    setCallTimer(0);
+    setError(null);
+    setSessionNotes("");
+    setSessionStartTime(Date.now());
+    setShowEndDialog(false);
+    setAutoVoice(true); // Auto-voice always on in voice mode
+    const sid = `voice-${persona.id}-${Date.now()}`;
+    setChatSessionId(sid);
+    setSessionId(sid);
+    const openingMsg = { role: "assistant" as const, content: persona.openingLine, timestamp: Date.now() };
+    setChatMessages([
+      { role: "system", content: `Voice call with ${persona.name}. Speak naturally — your words are transcribed and the persona responds with voice.`, timestamp: Date.now() },
+      openingMsg,
+    ]);
+    // Auto-play TTS for opening line
+    setTimeout(() => playTTS(persona.openingLine, 1), 300);
   };
 
   const sendChatMessage = async () => {
@@ -370,80 +424,15 @@ export default function Home() {
     chatInputRef.current?.focus();
   };
 
-  const startVoiceRoleplay = async (persona: Persona) => {
-    setSelectedPersona(persona);
-    setMode("voice");
-    setView("roleplay");
-    setRoleplayStatus("connecting");
-    setError(null);
-    setDispatchError(null);
-    setCallTimer(0);
-    setConnectionStep(0);
-    setSessionNotes("");
-    setSessionStartTime(Date.now());
-    setShowEndDialog(false);
-
-    try {
-      setConnectionStep(1);
-      const res = await fetch(`/api/roleplay/token?persona=${persona.id}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to generate session token");
-
-      setToken(data.token);
-      setRoomName(data.room);
-      setWsUrl(data.wsUrl);
-      setId(data.identity);
-      setSessionId(data.sessionId);
-      if (data.dispatch?.dispatchError) setDispatchError(data.dispatch.dispatchError);
-      setConnectionStep(2);
-
-      const { Room, RoomEvent } = await import("livekit-client");
-      const room = new Room({ adaptiveStream: true, dynacast: true, audioCaptureDefaults: { noiseSuppression: true, echoCancellation: true } });
-      roomRef.current = room;
-
-      room.on(RoomEvent.TrackSubscribed, (track: unknown) => {
-        const t = track as { kind: string; attach?: () => HTMLMediaElement };
-        if (t.kind === "audio" && t.attach) {
-          const audioEl = t.attach();
-          audioEl.id = "persona-audio";
-          document.body.appendChild(audioEl);
-          setIsAudioPlaying(true);
-          setRoleplayStatus("active");
-          setConnectionStep(4);
-        }
-      });
-      room.on(RoomEvent.TrackUnsubscribed, () => setIsAudioPlaying(false));
-      room.on(RoomEvent.ParticipantConnected, () => setConnectionStep(3));
-      room.on(RoomEvent.Disconnected, () => { setRoleplayStatus("ended"); setIsAudioPlaying(false); });
-
-      await room.connect(data.wsUrl, data.token);
-      setConnectionStep(3);
-      setRoleplayStatus("connected");
-      await room.localParticipant.enableAudio();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to start voice session");
-      setRoleplayStatus("error");
-    }
-  };
-
   const endRoleplay = async (outcome?: string) => {
     // Stop any TTS playback
     audioRef.current?.pause();
     audioRef.current = null;
     setPlayingMessageIdx(null);
     setTtsLoading(null);
+    setIsAudioPlaying(false);
 
-    try {
-      if (roomRef.current) {
-        const room = roomRef.current as { disconnect?: () => void };
-        room.disconnect?.();
-      }
-    } catch { /* ignore */ }
-
-    const audioEl = document.getElementById("persona-audio");
-    if (audioEl) audioEl.remove();
-
-    if (sessionId && mode === "voice") {
+    if (sessionId) {
       try {
         await fetch("/api/sessions", {
           method: "PATCH",
@@ -468,15 +457,6 @@ export default function Home() {
     setRoleplayStatus("idle");
   };
 
-  const toggleMute = async () => {
-    if (!roomRef.current) return;
-    const room = roomRef.current as { localParticipant?: { setMicrophoneEnabled?: (enabled: boolean) => Promise<void> } };
-    if (room.localParticipant?.setMicrophoneEnabled) {
-      await room.localParticipant.setMicrophoneEnabled(isMuted);
-      setIsMuted(!isMuted);
-    }
-  };
-
   const getDiffBadge = (difficulty: "easy" | "medium" | "hard") => {
     const config = DIFFICULTY_CONFIG[difficulty];
     return (
@@ -498,6 +478,79 @@ export default function Home() {
     );
   };
 
+  // ─── RENDER: Login Gate ────────────────────────────────────────────────────
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-4">
+        <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHZpZXdCb3g9IjAgMCA0MCA0MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxjaXJjbGUgY3g9IjIwIiBjeT0iMjAiIHI9IjEiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC4wNSkiLz48L2c+PC9zdmc+')] opacity-50" />
+        <motion.div
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="w-full max-w-md relative z-10"
+        >
+          <Card className="border-slate-700 bg-slate-800/80 backdrop-blur-sm shadow-2xl">
+            <CardHeader className="text-center pb-4">
+              <div className="flex justify-center mb-4">
+                <div className="w-16 h-16 rounded-xl bg-white/10 p-2 flex items-center justify-center">
+                  <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={48} height={48} className="rounded-lg" />
+                </div>
+              </div>
+              <CardTitle className="text-xl text-white">SGC TECH Roleplay Arena</CardTitle>
+              <CardDescription className="text-slate-400">
+                Enter your access password to continue
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <Input
+                    type={showPassword ? "text" : "password"}
+                    placeholder="Enter password"
+                    value={authPassword}
+                    onChange={e => { setAuthPassword(e.target.value); setAuthError(""); }}
+                    onKeyDown={e => { if (e.key === "Enter") handleLogin(); }}
+                    className="pl-10 pr-10 bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-emerald-500"
+                    autoFocus
+                  />
+                  <button
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-300"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                {authError && (
+                  <motion.p
+                    initial={{ opacity: 0, y: -5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="text-sm text-red-400 flex items-center gap-1"
+                  >
+                    <XCircle className="w-3.5 h-3.5" /> {authError}
+                  </motion.p>
+                )}
+              </div>
+              <Button
+                onClick={handleLogin}
+                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white gap-2"
+                size="lg"
+              >
+                <Shield className="w-4 h-4" /> Access Arena
+              </Button>
+            </CardContent>
+            <CardFooter className="justify-center pb-4">
+              <p className="text-xs text-slate-500 flex items-center gap-1">
+                <Lock className="w-3 h-3" /> Secured access — authorized personnel only
+              </p>
+            </CardFooter>
+          </Card>
+        </motion.div>
+      </div>
+    );
+  }
+
   // ─── RENDER: Dashboard ─────────────────────────────────────────────────────
 
   const renderDashboard = () => (
@@ -516,7 +569,7 @@ export default function Home() {
           </div>
           <h1 className="text-3xl md:text-4xl font-bold text-white mb-3">SGC TECH <span className="text-white/60 font-normal">Roleplay Arena</span></h1>
           <p className="text-slate-300 text-lg max-w-2xl mb-6">
-            Practice your sales pitch against AI-powered buyer personas. Choose text chat with voice playback or live voice calls for immersive conversations.
+            Practice your sales pitch against AI-powered buyer personas. Choose text chat with voice playback or immersive voice calls powered by Deepgram.
           </p>
           <div className="flex flex-wrap gap-3">
             <Button size="lg" onClick={() => setView("select")} className="bg-white text-slate-900 hover:bg-slate-100 gap-2">
@@ -604,7 +657,7 @@ export default function Home() {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           {[
             { step: "1", title: "Choose Persona", desc: "Pick a buyer persona — decision-maker, gatekeeper, or influencer", icon: Users },
-            { step: "2", title: "Start Session", desc: "Text chat with voice playback or live voice call", icon: MessageCircle },
+            { step: "2", title: "Start Session", desc: "Text chat with voice playback or immersive voice call", icon: MessageCircle },
             { step: "3", title: "Navigate Objections", desc: "Handle real objections and negotiation tactics", icon: Shield },
             { step: "4", title: "Get Feedback", desc: "Rate your performance and track improvement", icon: TrendingUp },
           ].map((item, i) => (
@@ -634,7 +687,7 @@ export default function Home() {
               <ul className="space-y-2 text-sm text-amber-800">
                 <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Listen carefully to the persona&apos;s tone and concerns before pitching</li>
                 <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Ask open-ended questions to uncover hidden pain points</li>
-                <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Use Auto-Voice to hear how the persona sounds — great for practicing tone</li>
+                <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Use Voice Call mode for an immersive conversation experience</li>
                 <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Gatekeepers require a different approach — respect their role and be specific</li>
               </ul>
             </CardContent>
@@ -663,7 +716,6 @@ export default function Home() {
         </div>
 
         <div className="flex flex-col gap-3">
-          {/* Difficulty Filter */}
           <div className="flex gap-2 flex-wrap">
             <span className="text-xs font-medium text-muted-foreground self-center mr-1">Difficulty:</span>
             {["all", "easy", "medium", "hard"].map(diff => (
@@ -673,7 +725,6 @@ export default function Home() {
               </Button>
             ))}
           </div>
-          {/* Type Filter */}
           <div className="flex gap-2 flex-wrap">
             <span className="text-xs font-medium text-muted-foreground self-center mr-1">Type:</span>
             {["all", "decision-maker", "gatekeeper", "influencer"].map(type => (
@@ -749,12 +800,37 @@ export default function Home() {
     );
   };
 
-  // ─── RENDER: Text Chat Roleplay ─────────────────────────────────────────────
+  // ─── RENDER: Chat Area (shared by both text and voice modes) ────────────────
 
-  const renderTextChat = () => (
+  const renderChatArea = () => (
     <div className="space-y-4 h-full flex flex-col">
+      {/* Voice mode indicator */}
+      {mode === "voice" && (
+        <div className="flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-emerald-50 border border-emerald-200">
+          <motion.div animate={{ scale: isAudioPlaying ? [1, 1.2, 1] : 1 }} transition={{ duration: 0.8, repeat: isAudioPlaying ? Infinity : 0 }}>
+            {isAudioPlaying ? <Volume2 className="w-4 h-4 text-emerald-600" /> : <Mic className="w-4 h-4 text-emerald-600" />}
+          </motion.div>
+          <span className="text-xs font-medium text-emerald-700">
+            {isAudioPlaying ? `${selectedPersona?.name} is speaking...` : isRecording ? "Listening to you..." : "Voice Call Active — Click mic to speak"}
+          </span>
+          {isAudioPlaying && (
+            <div className="flex gap-0.5 items-end">
+              {[1, 2, 3, 4].map(bar => (
+                <motion.div
+                  key={bar}
+                  animate={{ height: [4, 12 + Math.random() * 8, 4] }}
+                  transition={{ duration: 0.5 + Math.random() * 0.3, repeat: Infinity, delay: bar * 0.1 }}
+                  className="w-1 bg-emerald-500 rounded-full"
+                  style={{ height: 4 }}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Chat Messages */}
-      <ScrollArea className="flex-1 rounded-lg border bg-white p-4 min-h-[400px] max-h-[calc(100vh-320px)]">
+      <ScrollArea className="flex-1 rounded-lg border bg-white p-4 min-h-[400px] max-h-[calc(100vh-360px)]">
         <div className="space-y-4">
           {chatMessages.map((msg, i) => (
             <motion.div
@@ -828,15 +904,15 @@ export default function Home() {
 
       {/* Chat Input */}
       <div className="flex gap-2 items-end">
-        {/* Microphone button */}
+        {/* Microphone button - larger in voice mode */}
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
-                variant={isRecording ? "destructive" : "outline"}
-                size="icon"
+                variant={isRecording ? "destructive" : mode === "voice" ? "default" : "outline"}
+                size={mode === "voice" ? "default" : "icon"}
                 onClick={isRecording ? stopRecording : startRecording}
-                className="shrink-0"
+                className={`shrink-0 ${mode === "voice" ? "w-12 h-12" : ""}`}
               >
                 {isRecording ? (
                   <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ duration: 0.8, repeat: Infinity }}>
@@ -847,7 +923,7 @@ export default function Home() {
                 )}
               </Button>
             </TooltipTrigger>
-            <TooltipContent>{isRecording ? "Stop recording" : "Voice input"}</TooltipContent>
+            <TooltipContent>{isRecording ? "Stop recording" : mode === "voice" ? "Hold to speak" : "Voice input"}</TooltipContent>
           </Tooltip>
         </TooltipProvider>
 
@@ -857,7 +933,7 @@ export default function Home() {
             value={chatInput}
             onChange={e => setChatInput(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }}
-            placeholder={isRecording ? "Listening..." : "Type your sales pitch..."}
+            placeholder={isRecording ? "Listening..." : mode === "voice" ? "Speak or type your message..." : "Type your sales pitch..."}
             disabled={isChatLoading || isRecording}
             className="pr-10"
           />
@@ -878,109 +954,6 @@ export default function Home() {
     </div>
   );
 
-  // ─── RENDER: Voice Roleplay ─────────────────────────────────────────────────
-
-  const renderVoiceCall = () => {
-    const connectionSteps = [
-      { label: "Generating secure session...", icon: RefreshCw },
-      { label: "Requesting access token...", icon: Zap },
-      { label: "Connecting to voice room...", icon: Phone },
-      { label: "Persona participant joined", icon: Users },
-      { label: "Persona audio attached — speak now!", icon: Volume2 },
-    ];
-
-    return (
-      <div className="space-y-6">
-        {(roleplayStatus === "connecting" || roleplayStatus === "connected") && (
-          <div className="space-y-4 py-8">
-            <div className="flex justify-center">
-              <motion.div animate={{ rotate: 360 }} transition={{ duration: 2, repeat: Infinity, ease: "linear" }}>
-                <RefreshCw className="w-12 h-12 text-muted-foreground" />
-              </motion.div>
-            </div>
-            <div className="text-center space-y-2">
-              <h3 className="font-semibold text-lg">Connecting to {selectedPersona?.name}...</h3>
-              <p className="text-sm text-muted-foreground">Setting up voice channel</p>
-            </div>
-            <div className="max-w-sm mx-auto space-y-2">
-              {connectionSteps.map((step, i) => (
-                <div key={i} className={`flex items-center gap-2 text-sm transition-all duration-300 ${
-                  i < connectionStep ? "text-emerald-600" : i === connectionStep ? "text-foreground font-medium" : "text-muted-foreground"
-                }`}>
-                  {i < connectionStep ? <CheckCircle2 className="w-4 h-4" /> : i === connectionStep ? (
-                    <motion.div animate={{ opacity: [1, 0.5, 1] }} transition={{ duration: 1.5, repeat: Infinity }}><step.icon className="w-4 h-4" /></motion.div>
-                  ) : <div className="w-4 h-4 rounded-full border-2 border-muted" />}
-                  {step.label}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {roleplayStatus === "active" && (
-          <div className="space-y-6 py-8">
-            <div className="flex justify-center">
-              <motion.div animate={{ scale: isAudioPlaying ? [1, 1.05, 1] : 1 }} transition={{ duration: 0.5, repeat: isAudioPlaying ? Infinity : 0 }} className="relative">
-                <PersonaAvatar src={selectedPersona?.avatar || "/avatars/p1_faisal.png"} alt={selectedPersona?.name || "Persona"} size="xl" />
-                {isAudioPlaying && (
-                  <>
-                    <motion.div animate={{ scale: [1, 1.5], opacity: [0.3, 0] }} transition={{ duration: 1.5, repeat: Infinity }} className="absolute inset-0 rounded-full border-2 border-emerald-400" />
-                    <motion.div animate={{ scale: [1, 1.8], opacity: [0.2, 0] }} transition={{ duration: 1.5, repeat: Infinity, delay: 0.3 }} className="absolute inset-0 rounded-full border-2 border-emerald-300" />
-                  </>
-                )}
-              </motion.div>
-            </div>
-            <div className="text-center">
-              <h3 className="font-semibold text-lg">{selectedPersona?.name}</h3>
-              <p className="text-sm text-muted-foreground">{selectedPersona?.title}</p>
-              <div className="flex items-center justify-center gap-2 mt-2">
-                {isAudioPlaying ? (
-                  <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200"><Volume2 className="w-3 h-3 mr-1" /> Speaking</Badge>
-                ) : (
-                  <Badge variant="secondary"><Mic className="w-3 h-3 mr-1" /> Listening</Badge>
-                )}
-              </div>
-            </div>
-            <div className="flex justify-center gap-4">
-              <TooltipProvider><Tooltip><TooltipTrigger asChild>
-                <Button variant="outline" size="lg" className={`w-14 h-14 rounded-full ${isMuted ? "bg-red-50 border-red-200" : ""}`} onClick={toggleMute}>
-                  {isMuted ? <MicOff className="w-6 h-6 text-red-500" /> : <Mic className="w-6 h-6" />}
-                </Button>
-              </TooltipTrigger><TooltipContent>{isMuted ? "Unmute" : "Mute"}</TooltipContent></Tooltip></TooltipProvider>
-              <Button variant="destructive" size="lg" className="w-14 h-14 rounded-full" onClick={handleEndSession}><PhoneOff className="w-6 h-6" /></Button>
-            </div>
-            <p className="text-center text-xs text-muted-foreground">{isMuted ? "Microphone muted" : "Speak naturally"}</p>
-          </div>
-        )}
-
-        {roleplayStatus === "error" && (
-          <div className="py-8 text-center space-y-4">
-            <XCircle className="w-12 h-12 text-red-500 mx-auto" />
-            <h3 className="font-semibold text-lg">Connection Failed</h3>
-            <p className="text-sm text-muted-foreground max-w-sm mx-auto">{error}</p>
-            <div className="flex justify-center gap-3">
-              <Button variant="outline" onClick={() => { setView("dashboard"); setRoleplayStatus("idle"); }}>Back to Dashboard</Button>
-              <Button onClick={() => selectedPersona && startVoiceRoleplay(selectedPersona)} className="gap-2"><RefreshCw className="w-4 h-4" /> Try Again</Button>
-            </div>
-          </div>
-        )}
-
-        {dispatchError && (
-          <Card className="border-amber-200 bg-amber-50">
-            <CardContent className="p-4 flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-              <div>
-                <h4 className="font-medium text-amber-800 text-sm">Agent Dispatch Warning</h4>
-                <p className="text-xs text-amber-700 mt-1">The voice agent could not be dispatched. Make sure the LiveKit worker is running.</p>
-                <p className="text-xs text-amber-600 mt-1 font-mono">Error: {dispatchError}</p>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-      </div>
-    );
-  };
-
   // ─── RENDER: Roleplay Session ───────────────────────────────────────────────
 
   const renderRoleplay = () => (
@@ -989,14 +962,14 @@ export default function Home() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="sm" onClick={() => {
-            if (roleplayStatus === "active" || roleplayStatus === "connected") {
+            if (roleplayStatus === "active") {
               if (confirm("End the current session?")) handleEndSession();
             }
             setView("dashboard"); setRoleplayStatus("idle");
           }}>Back</Button>
           {selectedPersona && (
             <div className="flex items-center gap-2">
-              <span className="text-2xl">{selectedPersona.avatar}</span>
+              <PersonaAvatar src={selectedPersona.avatar} alt={selectedPersona.name} size="md" />
               <div>
                 <div className="font-semibold">{selectedPersona.name}</div>
                 <div className="text-xs text-muted-foreground">{selectedPersona.title} · {selectedPersona.company}</div>
@@ -1039,7 +1012,7 @@ export default function Home() {
       {/* Main Area */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2">
-          {mode === "text" ? renderTextChat() : renderVoiceCall()}
+          {renderChatArea()}
         </div>
 
         {/* Sidebar: Persona Info */}
@@ -1131,7 +1104,6 @@ export default function Home() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            {/* Session Stats */}
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-lg bg-slate-50 p-3 text-center">
                 <Clock className="w-4 h-4 text-muted-foreground mx-auto mb-1" />
@@ -1145,10 +1117,9 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Persona Info */}
             {selectedPersona && (
               <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-50">
-                <div className="text-2xl">{selectedPersona.avatar}</div>
+                <PersonaAvatar src={selectedPersona.avatar} alt={selectedPersona.name} size="md" />
                 <div>
                   <div className="font-medium text-sm">{selectedPersona.name}</div>
                   <div className="text-xs text-muted-foreground">{selectedPersona.title} · {selectedPersona.company}</div>
@@ -1156,7 +1127,6 @@ export default function Home() {
               </div>
             )}
 
-            {/* Outcome Selector */}
             <div>
               <label className="text-sm font-medium mb-2 block">Outcome</label>
               <div className="grid grid-cols-3 gap-2">
@@ -1179,7 +1149,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Notes */}
             <div>
               <label className="text-sm font-medium mb-2 block">Notes (optional)</label>
               <Textarea
@@ -1237,7 +1206,7 @@ export default function Home() {
           return (
             <Card key={session.id}><CardContent className="p-4 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="text-2xl">{persona?.avatar || "👤"}</div>
+                {persona && <PersonaAvatar src={persona.avatar} alt={persona.name} size="md" />}
                 <div>
                   <div className="font-medium text-sm">{persona?.name || session.personaId}</div>
                   <div className="text-xs text-muted-foreground">{new Date(session.createdAt).toLocaleDateString()} · {formatTime(session.duration || 0)}</div>
@@ -1271,7 +1240,7 @@ export default function Home() {
                 <span className="text-[10px] text-muted-foreground -mt-0.5">Sales Roleplay Arena</span>
               </div>
             </div>
-            <nav className="flex items-center gap-1">
+            <div className="flex items-center gap-1">
               {[
                 { key: "dashboard", label: "Dashboard", icon: BarChart3 },
                 { key: "select", label: "Personas", icon: Users },
@@ -1281,7 +1250,18 @@ export default function Home() {
                   <item.icon className="w-4 h-4" /><span className="hidden sm:inline">{item.label}</span>
                 </Button>
               ))}
-            </nav>
+              <Separator orientation="vertical" className="h-6 mx-1" />
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="sm" onClick={handleLogout} className="gap-1.5 text-muted-foreground hover:text-foreground">
+                      <LogOut className="w-4 h-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Logout</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </div>
           </div>
         </div>
       </header>
@@ -1304,12 +1284,12 @@ export default function Home() {
               <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={24} height={24} className="rounded" />
               <div className="flex flex-col leading-tight">
                 <span className="font-semibold text-white">SGC TECH</span>
-                <span className="text-slate-400">Sales Roleplay Arena — AI + TTS + ASR</span>
+                <span className="text-slate-400">Sales Roleplay Arena — AI + Deepgram Voice</span>
               </div>
             </div>
             <div className="flex items-center gap-3 text-slate-400">
               <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />{PERSONAS.length} Personas</span>
-              <span className="flex items-center gap-1"><Volume2 className="w-3 h-3" />Voice Chat</span>
+              <span className="flex items-center gap-1"><Volume2 className="w-3 h-3" />Deepgram Voice</span>
             </div>
           </div>
         </div>
