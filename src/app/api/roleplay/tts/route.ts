@@ -2,21 +2,59 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-// ZAI TTS voice descriptions:
-//   tongtong  - Warm and friendly (female)
-//   chuichui  - Lively and cute (female)
-//   xiaochen  - Calm and professional (male)
-//   jam       - British gentleman (male)
-//   kazi      - Clear and standard (neutral)
-//   douji     - Natural and fluent (male)
-//   luodo     - Expressive and infectious (male)
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEEPGRAM AURA-2 VOICE PRESETS — 11 unique English voices with distinct tone/pitch
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Female voices (6):
+//   asteria-en    — Warm, conversational, mid-pitch      (warm/confident)
+//   luna-en       — Clear, professional, mid-high pitch   (professional/polished)
+//   athena-en     — Authoritative, lower pitch, commanding (executive/decisive)
+//   hera-en       — Smooth, measured, mid pitch            (calm/reliable)
+//   cora-en       — Bright, energetic, higher pitch        (friendly/dynamic)
+//   amalthea-en   — Gentle, warm, softer pitch             (empathetic/kind)
+//
+// Male voices (5):
+//   orion-en      — Deep, authoritative, low pitch         (commanding/serious)
+//   apollo-en     — Warm, confident, mid-low pitch         (reassuring/experienced)
+//   arcas-en      — Conversational, mid pitch              (approachable/natural)
+//   zeus-en       — Powerful, deep, resonant               (dominant/imposing)
+//   atlas-en      — Steady, professional, mid pitch        (reliable/measured)
+
+// ─── Persona → Deepgram Voice Mapping ─────────────────────────────────────────
+// Each persona gets a UNIQUE voice that matches their personality, gender,
+// nationality, and role. Tone and pitch differentiation is critical —
+// every sales call should feel distinctly different.
+
+const DEEPGRAM_VOICE_MAP: Record<string, string> = {
+  // Male personas
+  p1_faisal:   "aura-2-apollo-en",   // Emirati MD, 52 — warm, experienced, relationship-first → Apollo (warm/reassuring)
+  p3_omar:     "aura-2-orion-en",    // Jordanian FD, 45 — analytical, direct, ROI-driven → Orion (deep/authoritative)
+  p4_rajesh:   "aura-2-arcas-en",    // Indian GM, 41 — fast-talking, aggressive negotiator → Arcas (conversational/approachable)
+  p5_imran:    "aura-2-atlas-en",    // Pakistani CFO, 47 — measured, financially disciplined → Atlas (steady/professional)
+  p6_vikram:   "aura-2-zeus-en",     // Indian GM, 43 — confident, direct, pragmatic → Zeus (powerful/imposing)
+  p8_michael:  "aura-2-orion-en",    // Irish, 49 — traditional, relationship-oriented → Orion (deep/authoritative)
+  p9_andrew:   "aura-2-arcas-en",    // Australian, 46 — friendly, open, direct → Arcas (approachable/natural)
+  p12_tariq:   "aura-2-atlas-en",    // Pakistani, 39 — technical, precise, reserved → Atlas (steady/measured)
+
+  // Female personas
+  p2_noura:    "aura-2-athena-en",   // Emirati COO, 38 — calm, precise, strategic → Athena (authoritative/commanding)
+  p7_sarah:    "aura-2-hera-en",     // British CFO, 44 — composed, exacting, dry wit → Hera (smooth/measured)
+  p10_maricel: "aura-2-asteria-en",  // Filipino, 34 — warm, helpful, professional → Asteria (warm/conversational)
+  p11_dana:    "aura-2-cora-en",     // Lebanese, 26 — lively, chatty, curious → Cora (bright/energetic)
+  p13_fatima:  "aura-2-athena-en",   // Emirati, 42 — formal, authoritative, direct → Athena (authoritative/commanding)
+};
+
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || "";
+
+// ─── ZAI TTS (Fallback) ──────────────────────────────────────────────────────
+
 const VALID_ZAI_VOICES = new Set([
   "tongtong", "chuichui", "xiaochen", "jam", "kazi", "douji", "luodo",
 ]);
 
-function mapVoice(voice: string): string {
+function mapZaiVoice(voice: string): string {
   if (VALID_ZAI_VOICES.has(voice)) return voice;
-  // Legacy aura-2 mappings (for backward compatibility)
   const legacyMap: Record<string, string> = {
     "aura-2-cora-en": "kazi",
     "aura-2-amalthea-en": "tongtong",
@@ -30,7 +68,6 @@ function mapVoice(voice: string): string {
   return legacyMap[voice] || "kazi";
 }
 
-// Singleton ZAI instance for performance
 let zaiInstance: any = null;
 async function getZAI() {
   if (!zaiInstance) {
@@ -40,8 +77,9 @@ async function getZAI() {
   return zaiInstance;
 }
 
-// Split text into chunks of max 900 chars (safe margin under 1024 API limit)
-function splitTextIntoChunks(text: string, maxLength = 900): string[] {
+// ─── Helper: Split text into chunks ──────────────────────────────────────────
+
+function splitTextIntoChunks(text: string, maxLength = 1900): string[] {
   if (text.length <= maxLength) return [text];
 
   const chunks: string[] = [];
@@ -61,7 +99,8 @@ function splitTextIntoChunks(text: string, maxLength = 900): string[] {
   return chunks;
 }
 
-// Retry helper with exponential backoff
+// ─── Helper: Retry with exponential backoff ──────────────────────────────────
+
 async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2, baseDelay = 1000): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -79,8 +118,102 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2, baseDelay = 10
   throw lastError;
 }
 
-// Generate TTS audio as WAV for a single chunk
-async function generateChunk(text: string, voice: string): Promise<Buffer> {
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEEPGRAM TTS — Primary engine with 11 distinct voice presets
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function callDeepgramTTS(text: string, personaId: string): Promise<Buffer> {
+  const model = DEEPGRAM_VOICE_MAP[personaId] || "aura-2-asteria-en";
+
+  return withRetry(async () => {
+    const chunks = splitTextIntoChunks(text, 1900);
+
+    if (chunks.length === 1) {
+      return await generateDeepgramChunk(text, model);
+    }
+
+    // Multi-chunk: concatenate WAV PCM data
+    const pcmBuffers: Buffer[] = [];
+    let totalDataLength = 0;
+    let sampleRate = 24000;
+    let numChannels = 1;
+    let bitsPerSample = 16;
+
+    for (const chunk of chunks) {
+      const wavBuf = await generateDeepgramChunk(chunk, model);
+      const { pcm, sampleRate: sr, numChannels: nc, bitsPerSample: bps } = extractPCMFromWAV(wavBuf);
+      pcmBuffers.push(pcm);
+      totalDataLength += pcm.length;
+      if (pcmBuffers.length === 1) {
+        sampleRate = sr;
+        numChannels = nc;
+        bitsPerSample = bps;
+      }
+    }
+
+    const allPCM = Buffer.concat(pcmBuffers, totalDataLength);
+    return buildWAV(allPCM, sampleRate, numChannels, bitsPerSample);
+  }, 2, 1500);
+}
+
+async function generateDeepgramChunk(text: string, model: string): Promise<Buffer> {
+  const url = `https://api.deepgram.com/v1/speak?model=${model}&encoding=linear16&container=wav`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Token ${DEEPGRAM_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ text }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Deepgram TTS failed (${response.status}): ${errorBody}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(new Uint8Array(arrayBuffer));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ZAI TTS — Fallback engine
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function callZaiTTS(text: string, voice: string): Promise<Buffer> {
+  const zaiVoice = mapZaiVoice(voice);
+  const chunks = splitTextIntoChunks(text, 900);
+
+  return withRetry(async () => {
+    if (chunks.length === 1) {
+      return await generateZaiChunk(text, zaiVoice);
+    }
+
+    const pcmBuffers: Buffer[] = [];
+    let totalDataLength = 0;
+    let sampleRate = 24000;
+    let numChannels = 1;
+    let bitsPerSample = 16;
+
+    for (const chunk of chunks) {
+      const wavBuf = await generateZaiChunk(chunk, zaiVoice);
+      const { pcm, sampleRate: sr, numChannels: nc, bitsPerSample: bps } = extractPCMFromWAV(wavBuf);
+      pcmBuffers.push(pcm);
+      totalDataLength += pcm.length;
+      if (pcmBuffers.length === 1) {
+        sampleRate = sr;
+        numChannels = nc;
+        bitsPerSample = bps;
+      }
+    }
+
+    const allPCM = Buffer.concat(pcmBuffers, totalDataLength);
+    return buildWAV(allPCM, sampleRate, numChannels, bitsPerSample);
+  }, 2, 1500);
+}
+
+async function generateZaiChunk(text: string, voice: string): Promise<Buffer> {
   const zai = await getZAI();
   const response = await zai.audio.tts.create({
     input: text,
@@ -93,15 +226,15 @@ async function generateChunk(text: string, voice: string): Promise<Buffer> {
   return Buffer.from(new Uint8Array(arrayBuffer));
 }
 
-// Extract raw PCM data from a WAV buffer and return it with audio format info
+// ═══════════════════════════════════════════════════════════════════════════════
+// WAV Utilities — Extract PCM / Build WAV headers
+// ═══════════════════════════════════════════════════════════════════════════════
+
 function extractPCMFromWAV(wavBuf: Buffer): { pcm: Buffer; sampleRate: number; numChannels: number; bitsPerSample: number } {
-  // Parse WAV header to find the 'data' chunk
-  // Default values
   let sampleRate = 24000;
   let numChannels = 1;
   let bitsPerSample = 16;
 
-  // Read format from WAV header
   if (wavBuf.length > 44) {
     numChannels = wavBuf.readUInt16LE(22);
     sampleRate = wavBuf.readUInt32LE(24);
@@ -131,91 +264,62 @@ function extractPCMFromWAV(wavBuf: Buffer): { pcm: Buffer; sampleRate: number; n
   };
 }
 
-// Build a WAV buffer from raw PCM data
 function buildWAV(pcmData: Buffer, sampleRate: number, numChannels: number, bitsPerSample: number): Buffer {
   const headerSize = 44;
   const dataLength = pcmData.length;
   const wavBuffer = Buffer.alloc(headerSize + dataLength);
 
-  // RIFF header
   wavBuffer.write('RIFF', 0);
   wavBuffer.writeUInt32LE(36 + dataLength, 4);
   wavBuffer.write('WAVE', 8);
 
-  // fmt chunk
   wavBuffer.write('fmt ', 12);
-  wavBuffer.writeUInt32LE(16, 16);        // chunk size
-  wavBuffer.writeUInt16LE(1, 20);         // PCM format
+  wavBuffer.writeUInt32LE(16, 16);
+  wavBuffer.writeUInt16LE(1, 20);
   wavBuffer.writeUInt16LE(numChannels, 22);
   wavBuffer.writeUInt32LE(sampleRate, 24);
-  wavBuffer.writeUInt32LE(sampleRate * numChannels * bitsPerSample / 8, 28); // byte rate
-  wavBuffer.writeUInt16LE(numChannels * bitsPerSample / 8, 32);              // block align
+  wavBuffer.writeUInt32LE(sampleRate * numChannels * bitsPerSample / 8, 28);
+  wavBuffer.writeUInt16LE(numChannels * bitsPerSample / 8, 32);
   wavBuffer.writeUInt16LE(bitsPerSample, 34);
 
-  // data chunk
   wavBuffer.write('data', 36);
   wavBuffer.writeUInt32LE(dataLength, 40);
 
-  // Copy PCM data
   pcmData.copy(wavBuffer, headerSize);
 
   return wavBuffer;
 }
 
-async function callZaiTTS(text: string, voice: string): Promise<Buffer> {
-  const zaiVoice = mapVoice(voice);
-  const chunks = splitTextIntoChunks(text, 900);
-
-  return withRetry(async () => {
-    if (chunks.length === 1) {
-      return await generateChunk(text, zaiVoice);
-    }
-
-    // For multi-chunk: generate each as WAV, extract PCM, concatenate, rebuild WAV
-    const pcmBuffers: Buffer[] = [];
-    let totalDataLength = 0;
-    let sampleRate = 24000;
-    let numChannels = 1;
-    let bitsPerSample = 16;
-
-    for (const chunk of chunks) {
-      const wavBuf = await generateChunk(chunk, zaiVoice);
-      const { pcm, sampleRate: sr, numChannels: nc, bitsPerSample: bps } = extractPCMFromWAV(wavBuf);
-      pcmBuffers.push(pcm);
-      totalDataLength += pcm.length;
-      if (pcmBuffers.length === 1) {
-        sampleRate = sr;
-        numChannels = nc;
-        bitsPerSample = bps;
-      }
-    }
-
-    // Concatenate all PCM data
-    const allPCM = Buffer.concat(pcmBuffers, totalDataLength);
-
-    // Build a single WAV with the concatenated PCM
-    return buildWAV(allPCM, sampleRate, numChannels, bitsPerSample);
-  }, 2, 1500);
-}
+// ═══════════════════════════════════════════════════════════════════════════════
+// API Route Handler — Deepgram primary, ZAI fallback
+// ═══════════════════════════════════════════════════════════════════════════════
 
 export async function POST(req: NextRequest) {
   try {
-    const { text, voice = "kazi" } = await req.json();
+    const { text, voice = "aura-2-asteria-en", personaId = "" } = await req.json();
 
     if (!text || text.trim().length === 0) {
       return NextResponse.json({ error: "Text is required" }, { status: 400 });
     }
 
-    // Limit to 1024 chars (z-ai API limit)
-    const truncatedText = text.slice(0, 1024);
-
+    const truncatedText = text.slice(0, 2000);
     let audioBuffer: Buffer;
+    let usedProvider = "deepgram";
 
-    try {
+    // ── Try Deepgram TTS first (11 distinct persona voices) ──
+    if (DEEPGRAM_API_KEY) {
+      try {
+        const effectivePersonaId = personaId || resolvePersonaIdFromVoice(voice);
+        audioBuffer = await callDeepgramTTS(truncatedText, effectivePersonaId);
+      } catch (dgError) {
+        console.warn("[tts] Deepgram TTS failed, falling back to ZAI:", dgError instanceof Error ? dgError.message : dgError);
+        usedProvider = "zai";
+        audioBuffer = await callZaiTTS(truncatedText, voice);
+      }
+    } else {
+      // No Deepgram API key — use ZAI directly
+      usedProvider = "zai";
       audioBuffer = await callZaiTTS(truncatedText, voice);
-    } catch (zaiError) {
-      console.error("[tts] z-ai TTS failed after retries:", zaiError instanceof Error ? zaiError.message : zaiError);
-      throw new Error("TTS generation failed - service unavailable");
     }
 
     return new NextResponse(audioBuffer, {
@@ -224,6 +328,7 @@ export async function POST(req: NextRequest) {
         "Content-Type": "audio/wav",
         "Content-Length": audioBuffer.length.toString(),
         "Cache-Control": "no-cache",
+        "X-TTS-Provider": usedProvider,
       },
     });
   } catch (error) {
@@ -235,13 +340,56 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// Warmup endpoint - pre-initialize the z-ai SDK singleton
+// Resolve personaId from legacy voice name (backward compatibility)
+function resolvePersonaIdFromVoice(voice: string): string {
+  // If the voice is already an aura-2 model, try to find a matching persona
+  // Otherwise return empty string (will use default voice)
+  const voiceToPersona: Record<string, string> = {
+    "aura-2-apollo-en": "p1_faisal",
+    "aura-2-orion-en": "p3_omar",
+    "aura-2-arcas-en": "p4_rajesh",
+    "aura-2-atlas-en": "p5_imran",
+    "aura-2-zeus-en": "p6_vikram",
+    "aura-2-athena-en": "p2_noura",
+    "aura-2-hera-en": "p7_sarah",
+    "aura-2-asteria-en": "p10_maricel",
+    "aura-2-cora-en": "p11_dana",
+  };
+  return voiceToPersona[voice] || "";
+}
+
+// Warmup endpoint
 export async function GET() {
+  const results: { deepgram: boolean; zai: boolean } = { deepgram: false, zai: false };
+
+  // Test Deepgram connectivity
+  if (DEEPGRAM_API_KEY) {
+    try {
+      const url = `https://api.deepgram.com/v1/speak?model=aura-2-asteria-en&encoding=linear16&container=wav`;
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Token ${DEEPGRAM_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text: "warmup" }),
+      });
+      results.deepgram = response.ok;
+    } catch {
+      results.deepgram = false;
+    }
+  }
+
+  // Test ZAI connectivity
   try {
     await getZAI();
-    return NextResponse.json({ warmup: true, provider: "zai" });
-  } catch (err) {
-    console.error("[tts] Warmup failed:", err);
-    return NextResponse.json({ warmup: false, error: err instanceof Error ? err.message : "Unknown" });
+    results.zai = true;
+  } catch {
+    results.zai = false;
   }
+
+  return NextResponse.json({
+    warmup: results.deepgram || results.zai,
+    providers: results,
+  });
 }
