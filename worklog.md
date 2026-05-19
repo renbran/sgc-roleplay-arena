@@ -29,3 +29,45 @@ Stage Summary:
 - Mobile layout fully functional with proper viewport handling
 - App is now accessible and functional on both mobile and desktop
 - Password: SGC2025
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: Fix voice/TTS playback - user cannot hear voice in roleplay
+
+Work Log:
+- Diagnosed TTS API: tested directly with curl, returns 200 OK with valid WAV audio (178KB)
+- Discovered Bug 1: Multi-chunk WAV concatenation was broken (Buffer.concat on WAV files = corrupted audio, each WAV has its own RIFF header)
+- Discovered Bug 2: Previous attempt to switch to MP3 format failed - z-ai TTS API does not support mp3 (error 1214)
+- Discovered Bug 3: No audio context unlock for mobile browsers - autoplay blocked
+- Discovered Bug 4: No visual feedback when TTS fails or is loading
+- Discovered Bug 5: Auto-voice toggle was desktop-only, needed on mobile too
+- Fixed TTS route:
+  - Reverted to WAV format (only supported format)
+  - Implemented proper multi-chunk WAV concatenation: extract PCM data from each WAV, concatenate raw PCM, rebuild single WAV header
+  - Added singleton ZAI instance for better performance (no re-creating SDK each call)
+  - Fixed text limit to 1024 chars (z-ai API max), chunks at 900 chars for safety margin
+- Fixed playTTS function:
+  - Added dedicated stopTTS() helper that properly cleans up audio, blob URLs, and state
+  - Added content-type validation on TTS response (detects if API returns JSON error instead of audio)
+  - Added ttsError state for user-visible error feedback
+  - Added detailed console logging for every step of TTS pipeline
+  - Better autoplay restriction handling with specific NotAllowedError detection
+- Added audio unlock mechanism:
+  - On first click/touch/keydown anywhere on page, plays a silent audio clip to unlock the browser audio pipeline
+  - This ensures subsequent audio.play() calls work on mobile
+  - audioUnlockedRef tracks unlock state
+  - Auto-voice only triggers if audio is already unlocked
+- Enhanced chat UI:
+  - Speaker button now shows different states: loading spinner, playing (green), error (amber warning), default
+  - Added "Speaking..." indicator with pulsing dot below playing messages
+  - Error state allows retry by clicking again
+- Enabled auto-voice toggle on mobile (was desktop-only before)
+- Tested all endpoints: TTS (200, valid WAV), multi-chunk TTS (200, valid WAV), Chat (200)
+- Lint passes cleanly
+
+Stage Summary:
+- TTS API fully working with proper WAV concatenation for long text
+- Audio playback should now work on mobile with the audio unlock mechanism
+- Visual feedback for all TTS states (loading, playing, error)
+- Auto-voice works on mobile when audio pipeline is unlocked

@@ -138,6 +138,9 @@ export default function Home() {
   const [autoVoice, setAutoVoice] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const ttsWarmedUp = useRef(false);
+  const audioUnlockedRef = useRef(false);
+  const currentAudioUrlRef = useRef<string | null>(null);
+  const [ttsError, setTtsError] = useState<string | null>(null);
 
   // Microphone recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -188,9 +191,38 @@ export default function Home() {
     setAuthPassword("");
   };
 
+  // ─── Audio Unlock (for mobile browsers) ──────────────────────────────────
+  // Mobile browsers require a user gesture before audio can play.
+  // We unlock audio on the first tap/click anywhere on the page.
+  useEffect(() => {
+    const unlock = () => {
+      if (audioUnlockedRef.current) return;
+      audioUnlockedRef.current = true;
+      // Create and immediately play/pause a silent audio to unlock the audio pipeline
+      const audio = new Audio();
+      audio.src = 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA/+M4wAAAAAAAAAAAAEluZm8AAAAPAAAAAgAAAbAAkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYgFssGAAAAAAAAAAAAAAAAAAAA/+M4wAAAAAAAAAAAAEluZm8AAAAPAAAAAgAAAbAAkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYgFssGAAAAAAAAAAAAAAAAAAAA';
+      audio.play().then(() => {
+        audio.pause();
+        audio.currentTime = 0;
+        console.log('[audio] Audio pipeline unlocked');
+      }).catch(() => { /* unlock failed, will try again on next interaction */ });
+      document.removeEventListener('click', unlock);
+      document.removeEventListener('touchstart', unlock);
+      document.removeEventListener('keydown', unlock);
+    };
+    document.addEventListener('click', unlock, { once: false });
+    document.addEventListener('touchstart', unlock, { once: false });
+    document.addEventListener('keydown', unlock, { once: false });
+    return () => {
+      document.removeEventListener('click', unlock);
+      document.removeEventListener('touchstart', unlock);
+      document.removeEventListener('keydown', unlock);
+    };
+  }, []);
+
   // ─── TTS Warmup ──────────────────────────────────────────────────────────
 
-  // Pre-warm the TTS service when authenticated so first call doesn't fail
+  // Pre-warm the TTS service when authenticated so first call is fast
   useEffect(() => {
     if (isAuthenticated && !ttsWarmedUp.current) {
       ttsWarmedUp.current = true;
@@ -201,77 +233,131 @@ export default function Home() {
     }
   }, [isAuthenticated]);
 
+  // ─── Stop current TTS ───────────────────────────────────────────────────────
+
+  const stopTTS = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+    }
+    if (currentAudioUrlRef.current) {
+      URL.revokeObjectURL(currentAudioUrlRef.current);
+      currentAudioUrlRef.current = null;
+    }
+    setPlayingMessageIdx(null);
+    setIsAudioPlaying(false);
+    setTtsLoading(null);
+  }, []);
+
   // ─── TTS Playback ───────────────────────────────────────────────────────────
 
   const playTTS = useCallback(async (text: string, messageIdx: number) => {
+    // If clicking the same message that's playing, stop it
     if (playingMessageIdx === messageIdx) {
-      audioRef.current?.pause();
-      audioRef.current = null;
-      setPlayingMessageIdx(null);
+      stopTTS();
       return;
     }
 
-    audioRef.current?.pause();
+    // Stop any current audio
+    stopTTS();
     setTtsLoading(messageIdx);
+    setTtsError(null);
 
     try {
+      console.log(`[tts] Requesting TTS for message ${messageIdx}, text length: ${text.length}`);
+
       const res = await fetch("/api/roleplay/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: text.slice(0, 2000), voice: "kazi" }),
+        body: JSON.stringify({ text: text.slice(0, 1024), voice: "kazi" }),
       });
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        console.warn("TTS failed:", errData.error || res.status);
+        const errMsg = errData.error || `HTTP ${res.status}`;
+        console.warn("[tts] TTS request failed:", errMsg);
         setTtsLoading(null);
-        return; // Graceful failure - don't throw, just skip TTS
+        setTtsError(errMsg);
+        return;
+      }
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('audio') && !contentType.includes('mpeg')) {
+        console.warn("[tts] Unexpected content type:", contentType);
+        setTtsLoading(null);
+        setTtsError('Invalid audio response');
+        return;
       }
 
       const audioBlob = await res.blob();
       if (audioBlob.size < 100) {
-        console.warn("TTS returned empty audio");
+        console.warn("[tts] TTS returned empty audio, size:", audioBlob.size);
         setTtsLoading(null);
+        setTtsError('Empty audio response');
         return;
       }
 
+      console.log(`[tts] Got audio blob: ${audioBlob.size} bytes, type: ${audioBlob.type}`);
+
       const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
+      currentAudioUrlRef.current = audioUrl;
+
+      const audio = new Audio();
+      audio.preload = 'auto';
+      audio.volume = 1.0;
+      audio.src = audioUrl;
       audioRef.current = audio;
 
-      audio.onended = () => {
-        setPlayingMessageIdx(null);
-        setIsAudioPlaying(false);
-        URL.revokeObjectURL(audioUrl);
+      // Set up event handlers before playing
+      audio.oncanplaythrough = () => {
+        console.log('[tts] Audio can play through');
       };
 
-      audio.onerror = () => {
-        console.warn("Audio playback error");
+      audio.onended = () => {
+        console.log('[tts] Audio playback ended');
         setPlayingMessageIdx(null);
         setIsAudioPlaying(false);
-        setTtsLoading(null);
-        URL.revokeObjectURL(audioUrl);
+        if (currentAudioUrlRef.current) {
+          URL.revokeObjectURL(currentAudioUrlRef.current);
+          currentAudioUrlRef.current = null;
+        }
+      };
+
+      audio.onerror = (e) => {
+        console.error('[tts] Audio playback error:', e, 'src:', audio.src?.substring(0, 50));
+        stopTTS();
+        setTtsError('Audio playback failed');
       };
 
       setPlayingMessageIdx(messageIdx);
       setIsAudioPlaying(true);
       setTtsLoading(null);
 
-      // Play with user interaction awareness
+      // Attempt to play - handle autoplay restrictions
       try {
         await audio.play();
-      } catch (playErr) {
-        // Autoplay blocked - this is normal on mobile without user interaction
-        console.warn("Audio play blocked (likely autoplay restriction):", playErr);
-        setPlayingMessageIdx(null);
-        setIsAudioPlaying(false);
+        console.log('[tts] Audio playing successfully');
+      } catch (playErr: any) {
+        const errName = playErr?.name || '';
+        if (errName === 'NotAllowedError') {
+          console.warn('[tts] Autoplay blocked - user interaction required');
+          // Don't fully stop - let user click again to retry
+          setPlayingMessageIdx(null);
+          setIsAudioPlaying(false);
+          setTtsError('Tap again to play audio');
+        } else {
+          console.error('[tts] Play error:', playErr);
+          stopTTS();
+          setTtsError('Audio playback error');
+        }
       }
     } catch (err) {
-      console.warn("TTS playback error:", err);
-      setTtsLoading(null);
-      setIsAudioPlaying(false);
+      console.error('[tts] TTS error:', err);
+      stopTTS();
+      setTtsError('Voice unavailable');
     }
-  }, [playingMessageIdx]);
+  }, [playingMessageIdx, stopTTS]);
 
   // ─── Microphone Recording ───────────────────────────────────────────────────
 
@@ -295,9 +381,10 @@ export default function Home() {
         }
         setChatMessages(prev => {
           const newMessages = [...prev, { role: "assistant", content: data.response, timestamp: Date.now() }];
-          if (autoVoice) {
+          if (autoVoice && audioUnlockedRef.current) {
             const idx = newMessages.length - 1;
-            setTimeout(() => playTTS(data.response, idx), 200);
+            // Short delay to ensure DOM update and audio pipeline is ready
+            setTimeout(() => playTTS(data.response, idx), 300);
           }
           return newMessages;
         });
@@ -631,11 +718,7 @@ export default function Home() {
   };
 
   const endRoleplay = async (outcome?: string) => {
-    audioRef.current?.pause();
-    audioRef.current = null;
-    setPlayingMessageIdx(null);
-    setTtsLoading(null);
-    setIsAudioPlaying(false);
+    stopTTS();
 
     if (isRecording) {
       stopRecording();
@@ -1080,19 +1163,36 @@ export default function Home() {
                     {msg.role === "assistant" ? (
                       <div className="rounded-2xl px-3 py-2.5 text-sm whitespace-pre-wrap bg-slate-100 text-slate-900 rounded-bl-md relative group">
                         {msg.content}
-                        <button
-                          onClick={() => playTTS(msg.content, i)}
-                          className="absolute -top-1 -right-1 w-7 h-7 rounded-full bg-white shadow-md flex items-center justify-center hover:bg-slate-50 active:bg-slate-100 transition-colors"
-                          title={playingMessageIdx === i ? "Stop voice" : "Play voice"}
-                        >
-                          {ttsLoading === i ? (
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          ) : playingMessageIdx === i ? (
-                            <Volume2 className="w-3.5 h-3.5 text-emerald-600" />
-                          ) : (
-                            <Volume2 className="w-3.5 h-3.5 text-muted-foreground" />
-                          )}
-                        </button>
+                        <div className="absolute -top-1.5 -right-1.5 flex items-center gap-0.5">
+                          <button
+                            onClick={() => playTTS(msg.content, i)}
+                            className={`w-7 h-7 rounded-full shadow-md flex items-center justify-center transition-all active:scale-95 ${
+                              playingMessageIdx === i
+                                ? "bg-emerald-500 hover:bg-emerald-600"
+                                : ttsError && ttsLoading === null
+                                  ? "bg-amber-100 hover:bg-amber-200"
+                                  : "bg-white hover:bg-slate-50"
+                            }`}
+                            title={playingMessageIdx === i ? "Stop voice" : ttsError ? "Retry voice" : "Play voice"}
+                            disabled={ttsLoading !== null && ttsLoading !== i}
+                          >
+                            {ttsLoading === i ? (
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-slate-500" />
+                            ) : playingMessageIdx === i ? (
+                              <Volume2 className="w-3.5 h-3.5 text-white" />
+                            ) : ttsError ? (
+                              <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
+                            ) : (
+                              <Volume2 className="w-3.5 h-3.5 text-muted-foreground" />
+                            )}
+                          </button>
+                        </div>
+                        {playingMessageIdx === i && (
+                          <div className="flex items-center gap-1 mt-1.5 pt-1.5 border-t border-slate-200/60">
+                            <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ duration: 0.8, repeat: Infinity }} className="w-2 h-2 rounded-full bg-emerald-500" />
+                            <span className="text-[10px] text-emerald-600 font-medium">Speaking...</span>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="rounded-2xl px-3 py-2.5 text-sm whitespace-pre-wrap bg-primary text-primary-foreground rounded-br-md">
@@ -1378,11 +1478,11 @@ export default function Home() {
               </span>
             );
           })()}
-          {/* Auto-Voice Toggle - text mode, desktop only */}
-          {mode === "text" && roleplayStatus === "active" && !isMobile && (
+          {/* Auto-Voice Toggle */}
+          {roleplayStatus === "active" && (
             <div className="flex items-center gap-2">
               <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-                <Volume2 className="w-3.5 h-3.5" /> Auto-Voice
+                <Volume2 className="w-3.5 h-3.5" /> {!isMobile && "Auto-Voice"}
                 <Switch checked={autoVoice} onCheckedChange={setAutoVoice} className="scale-75" />
               </label>
             </div>
