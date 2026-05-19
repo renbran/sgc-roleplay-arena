@@ -123,3 +123,27 @@ Stage Summary:
 - dvh unit fallback ensures proper height on older mobile browsers
 - Page now uses consistent CSS-driven responsive layout instead of runtime JS checks
 - App should be fully accessible and functional on mobile web browsers
+---
+Task ID: 1
+Agent: Main Agent
+Task: Fix TTS failed error - add z-ai-web-dev-sdk fallback for TTS and ASR routes
+
+Work Log:
+- Identified root cause: DEEPGRAM_API_KEY was not set in .env file, causing TTS API to return 500
+- Chat route already had fallback to z-ai-web-dev-sdk, but TTS and ASR routes didn't
+- Rewrote /src/app/api/roleplay/tts/route.ts with Deepgram primary + z-ai-web-dev-sdk fallback
+  - Mapped Deepgram Aura-2 voice IDs to z-ai TTS voice names (kazi, jam, tongtong, etc.)
+  - Added text chunking for z-ai's 1024 character limit
+  - Used wav format for z-ai TTS (mp3 not supported by z-ai SDK)
+  - Returns audio/wav content type when using z-ai provider
+- Rewrote /src/app/api/roleplay/asr/route.ts with Deepgram primary + z-ai-web-dev-sdk fallback
+  - Uses z-ai audio.asr.create() with base64 input
+- Verified all APIs return 200: TTS, ASR, Chat
+- Verified TTS generates valid WAV audio file (210KB, RIFF WAVE format)
+- Lint passes clean
+
+Stage Summary:
+- TTS API now returns 200 instead of 500 (falls back to z-ai-web-dev-sdk)
+- ASR API now returns 200 instead of 500 (falls back to z-ai-web-dev-sdk)
+- Chat API continues to work with z-ai-web-dev-sdk fallback
+- All three core APIs are now functional without requiring external API keys
