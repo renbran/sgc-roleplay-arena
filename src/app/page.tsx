@@ -141,6 +141,12 @@ export default function Home() {
   const [ttsError, setTtsError] = useState<string | null>(null);
   const ttsAudioContextRef = useRef<AudioContext | null>(null);
   const ttsSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  // Ref for latest playTTS to avoid stale closures in setTimeout
+  const playTTSRef = useRef<(text: string, messageIdx: number) => Promise<void>>();
+  // Refs for recording guard conditions to avoid stale closures
+  const isAudioPlayingRef = useRef(false);
+  const playingMessageIdxRef = useRef<number | null>(null);
+  const isChatLoadingRef = useRef(false);
 
   // Microphone recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -240,6 +246,8 @@ export default function Home() {
     }
     setPlayingMessageIdx(null);
     setIsAudioPlaying(false);
+    playingMessageIdxRef.current = null;
+    isAudioPlayingRef.current = false;
     setTtsLoading(null);
   }, []);
 
@@ -327,12 +335,36 @@ export default function Home() {
         console.log('[tts] Audio playback ended');
         setPlayingMessageIdx(null);
         setIsAudioPlaying(false);
+        playingMessageIdxRef.current = null;
+        isAudioPlayingRef.current = false;
         ttsSourceRef.current = null;
       };
 
       setPlayingMessageIdx(messageIdx);
       setIsAudioPlaying(true);
+      playingMessageIdxRef.current = messageIdx;
+      isAudioPlayingRef.current = true;
       setTtsLoading(null);
+
+      // Safety timeout: ensure refs get reset even if onended doesn't fire
+      const audioDuration = audioBuffer.duration * 1000 + 500; // buffer of 500ms
+      const safetyTimer = setTimeout(() => {
+        if (playingMessageIdxRef.current === messageIdx) {
+          console.warn('[tts] Safety timeout — onended may not have fired, resetting state');
+          setPlayingMessageIdx(null);
+          setIsAudioPlaying(false);
+          playingMessageIdxRef.current = null;
+          isAudioPlayingRef.current = false;
+          ttsSourceRef.current = null;
+        }
+      }, audioDuration);
+
+      // Clear safety timer when onended fires normally
+      const originalOnEnded = source.onended;
+      source.onended = () => {
+        clearTimeout(safetyTimer);
+        if (originalOnEnded) originalOnEnded();
+      };
 
       source.start(0);
       console.log('[tts] Audio playing successfully via Web Audio API');
@@ -349,14 +381,31 @@ export default function Home() {
     }
   }, [playingMessageIdx, stopTTS, selectedPersona]);
 
+  // Keep ref updated to avoid stale closures in setTimeout/auto-voice
+  useEffect(() => {
+    playTTSRef.current = playTTS;
+  }, [playTTS]);
+
+  // Sync state → refs for reliable guard condition checks
+  useEffect(() => {
+    isAudioPlayingRef.current = isAudioPlaying;
+  }, [isAudioPlaying]);
+  useEffect(() => {
+    playingMessageIdxRef.current = playingMessageIdx;
+  }, [playingMessageIdx]);
+  useEffect(() => {
+    isChatLoadingRef.current = isChatLoading;
+  }, [isChatLoading]);
+
   // ─── Microphone Recording ───────────────────────────────────────────────────
 
   const sendChatMessageWithText = useCallback(async (text: string) => {
-    if (!text.trim() || !selectedPersona || isChatLoading || isRecording) return;
+    if (!text.trim() || !selectedPersona || isChatLoadingRef.current) return;
     const userMsg = text.trim();
     setInputMode("text");
     setChatMessages(prev => [...prev, { role: "user", content: userMsg, timestamp: Date.now() }]);
     setIsChatLoading(true);
+    isChatLoadingRef.current = true;
 
     try {
       const res = await fetch("/api/roleplay/chat", {
@@ -373,8 +422,12 @@ export default function Home() {
           const newMessages = [...prev, { role: "assistant", content: data.response, timestamp: Date.now() }];
           if (autoVoice && audioUnlockedRef.current) {
             const idx = newMessages.length - 1;
-            // Short delay to ensure DOM update and audio pipeline is ready
-            setTimeout(() => playTTS(data.response, idx), 300);
+            // Use ref to avoid stale closure — playTTSRef always has the latest playTTS
+            setTimeout(() => {
+              if (playTTSRef.current) {
+                playTTSRef.current(data.response, idx);
+              }
+            }, 300);
           }
           return newMessages;
         });
@@ -385,7 +438,8 @@ export default function Home() {
       setChatMessages(prev => [...prev, { role: "system", content: "Connection error. Please try again.", timestamp: Date.now() }]);
     }
     setIsChatLoading(false);
-  }, [selectedPersona, isChatLoading, chatSessionId, autoVoice, playTTS, isRecording]);
+    isChatLoadingRef.current = false;
+  }, [selectedPersona, chatSessionId, autoVoice]);
 
   // ─── Voice Activity Detection (VAD) ─────────────────────────────────────────
 
@@ -444,31 +498,36 @@ export default function Home() {
         return;
       }
 
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const base64Audio = (reader.result as string).split(",")[1];
-        if (!base64Audio) {
-          isStoppingRef.current = false;
-          return;
-        }
+      const base64Audio = await new Promise<string | null>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const result = (reader.result as string).split(",")[1];
+          resolve(result || null);
+        };
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(audioBlob);
+      });
 
-        try {
-          const res = await fetch("/api/roleplay/asr", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ audio: base64Audio }),
-          });
-          const data = await res.json();
-          if (data.success && data.text && data.text.trim()) {
-            sendChatMessageWithText(data.text.trim());
-          }
-        } catch (err) {
-          console.error("ASR error:", err);
-        } finally {
-          isStoppingRef.current = false;
+      if (!base64Audio) {
+        isStoppingRef.current = false;
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/roleplay/asr", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ audio: base64Audio }),
+        });
+        const data = await res.json();
+        if (data.success && data.text && data.text.trim()) {
+          await sendChatMessageWithText(data.text.trim());
         }
-      };
-      reader.readAsDataURL(audioBlob);
+      } catch (err) {
+        console.error("ASR error:", err);
+      } finally {
+        isStoppingRef.current = false;
+      }
     } catch (err) {
       console.error("Audio processing error:", err);
       isStoppingRef.current = false;
@@ -487,9 +546,10 @@ export default function Home() {
   }, [cleanupRecording]);
 
   const startRecording = useCallback(async () => {
-    if (isAudioPlaying || playingMessageIdx !== null) return;
+    // Use refs for guard checks to avoid stale closure issues
+    if (isAudioPlayingRef.current || playingMessageIdxRef.current !== null) return;
     if (isRecording || isStoppingRef.current) return;
-    if (isChatLoading) return;
+    if (isChatLoadingRef.current) return;
     if (chatInput.trim()) return;
     setInputMode("voice");
 
@@ -600,7 +660,7 @@ export default function Home() {
       console.error("Microphone access error:", err);
       setIsRecording(false);
     }
-  }, [isAudioPlaying, playingMessageIdx, isRecording, isChatLoading, chatInput, stopRecording, processRecordedAudio]);
+  }, [isRecording, chatInput, stopRecording, processRecordedAudio]);
 
   // ─── Data Fetching ──────────────────────────────────────────────────────────
 
