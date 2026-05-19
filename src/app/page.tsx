@@ -141,6 +141,7 @@ export default function Home() {
   const [ttsError, setTtsError] = useState<string | null>(null);
   const ttsAudioContextRef = useRef<AudioContext | null>(null);
   const ttsSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   // Ref for latest playTTS to avoid stale closures in setTimeout
   const playTTSRef = useRef<(text: string, messageIdx: number) => Promise<void>>();
   // Refs for recording guard conditions to avoid stale closures
@@ -230,16 +231,99 @@ export default function Home() {
   useEffect(() => {
     if (isAuthenticated && !ttsWarmedUp.current) {
       ttsWarmedUp.current = true;
+      // Preload browser voices (they load asynchronously in some browsers like Chrome)
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.getVoices();
+        // Chrome fires voiceschanged event when voices are ready
+        window.speechSynthesis.addEventListener('voiceschanged', () => {
+          const voices = window.speechSynthesis.getVoices();
+          console.log(`[tts] Browser voices loaded: ${voices.length} voices available`);
+        }, { once: true });
+      }
+      // Also warm up ZAI TTS as fallback
       fetch("/api/roleplay/tts", { method: "GET" })
         .then(res => res.json())
-        .then(data => console.log("[tts] warmup:", data.warmup ? "success" : "failed"))
+        .then(data => console.log("[tts] ZAI warmup:", data.warmup ? "success" : "failed"))
         .catch(() => { /* warmup failure is non-critical */ });
     }
   }, [isAuthenticated]);
 
+  // ─── Browser SpeechSynthesis Voice Mapping ──────────────────────────────────
+  // Maps persona nationality + gender to preferred browser SpeechSynthesis voice
+  // This provides native English accents (British, Australian, Indian, etc.)
+  // instead of Chinese-accented ZAI TTS voices for English text
+
+  const PERSONA_VOICE_PREFS: Record<string, { lang: string; gender: 'male' | 'female' }> = {
+    p1_faisal:   { lang: 'en-GB', gender: 'male' },     // Emirati → British English male
+    p2_noura:    { lang: 'en-GB', gender: 'female' },    // Emirati → British English female
+    p3_omar:     { lang: 'en-GB', gender: 'male' },      // Jordanian → British English male
+    p4_rajesh:   { lang: 'en-IN', gender: 'male' },      // Indian → Indian English male
+    p5_imran:    { lang: 'en-GB', gender: 'male' },      // Pakistani → British English male
+    p6_vikram:   { lang: 'en-IN', gender: 'male' },      // Indian → Indian English male
+    p7_sarah:    { lang: 'en-GB', gender: 'female' },    // British → British English female
+    p8_michael:  { lang: 'en-IE', gender: 'male' },      // Irish → Irish English male
+    p9_andrew:   { lang: 'en-AU', gender: 'male' },      // Australian → Australian English male
+    p10_maricel: { lang: 'en-US', gender: 'female' },    // Filipino → US English female
+    p11_dana:    { lang: 'en-GB', gender: 'female' },    // Lebanese → British English female
+    p12_tariq:   { lang: 'en-GB', gender: 'male' },      // Pakistani → British English male
+    p13_fatima:  { lang: 'en-GB', gender: 'female' },    // Emirati → British English female
+  };
+
+  // Pick the best browser voice for a persona
+  const pickBrowserVoice = useCallback((personaId: string): SpeechSynthesisVoice | null => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return null;
+
+    const pref = PERSONA_VOICE_PREFS[personaId];
+    if (!pref) return null;
+
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length === 0) return null;
+
+    // Try exact language match first (e.g. en-IN, en-AU, en-IE)
+    const exactMatch = voices.find(v => v.lang === pref.lang);
+    if (exactMatch) return exactMatch;
+
+    // Try language prefix match (e.g. en-GB matches en-GB-* variants)
+    const langPrefix = pref.lang.split('-')[0]; // 'en'
+    const regionCode = pref.lang.split('-')[1];  // 'GB', 'IN', etc.
+    const prefixMatch = voices.find(v => v.lang.startsWith(`${langPrefix}-${regionCode}`));
+    if (prefixMatch) return prefixMatch;
+
+    // Try gender matching within the language family
+    const sameLangVoices = voices.filter(v => v.lang.startsWith(langPrefix + '-'));
+    if (sameLangVoices.length > 0) {
+      // Prefer local voices (better quality, no network delay)
+      const localVoices = sameLangVoices.filter(v => v.localService);
+      const pool = localVoices.length > 0 ? localVoices : sameLangVoices;
+
+      // Try to match gender by voice name heuristics
+      const genderKeywords = pref.gender === 'female'
+        ? ['female', 'woman', 'zira', 'samantha', 'karen', 'victoria', 'fiona', 'moira', 'tessa', 'veena']
+        : ['male', 'man', 'david', 'daniel', 'james', 'alex', 'tom', 'fred', 'rishi', 'oliver'];
+
+      const genderMatch = pool.find(v =>
+        genderKeywords.some(kw => v.name.toLowerCase().includes(kw))
+      );
+      if (genderMatch) return genderMatch;
+
+      // Return first voice in the language family
+      return pool[0];
+    }
+
+    // Ultimate fallback: any English voice
+    const anyEnglish = voices.find(v => v.lang.startsWith('en'));
+    return anyEnglish || null;
+  }, []);
+
   // ─── Stop current TTS ───────────────────────────────────────────────────────
 
   const stopTTS = useCallback(() => {
+    // Cancel browser SpeechSynthesis
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    currentUtteranceRef.current = null;
+    // Cancel Web Audio API playback
     if (ttsSourceRef.current) {
       try { ttsSourceRef.current.stop(); } catch { /* already stopped */ }
       ttsSourceRef.current = null;
@@ -252,6 +336,11 @@ export default function Home() {
   }, []);
 
   // ─── TTS Playback ───────────────────────────────────────────────────────────
+  // Primary: Browser SpeechSynthesis (native English accents matching persona nationality)
+  // Fallback: ZAI TTS API (Chinese voices — used only if SpeechSynthesis unavailable)
+
+  // Ref for ZAI TTS fallback to avoid circular dependency issues
+  const playZAITTSRef = useRef<(text: string, messageIdx: number) => Promise<void>>();
 
   const playTTS = useCallback(async (text: string, messageIdx: number) => {
     // If clicking the same message that's playing, stop it
@@ -265,8 +354,76 @@ export default function Home() {
     setTtsLoading(messageIdx);
     setTtsError(null);
 
+    // ── Try Browser SpeechSynthesis first ──
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      const voice = pickBrowserVoice(selectedPersona?.id || '');
+
+      if (voice) {
+        console.log(`[tts] Using browser SpeechSynthesis: "${voice.name}" (${voice.lang}) for ${selectedPersona?.name}`);
+
+        const utterance = new SpeechSynthesisUtterance(text.slice(0, 1024));
+        utterance.voice = voice;
+        utterance.lang = voice.lang;
+        utterance.rate = 0.95;
+        utterance.pitch = 1.0;
+
+        // Store the utterance so we can cancel it in stopTTS
+        currentUtteranceRef.current = utterance;
+
+        utterance.onstart = () => {
+          setPlayingMessageIdx(messageIdx);
+          setIsAudioPlaying(true);
+          playingMessageIdxRef.current = messageIdx;
+          isAudioPlayingRef.current = true;
+          setTtsLoading(null);
+        };
+
+        utterance.onend = () => {
+          console.log('[tts] SpeechSynthesis playback ended');
+          setPlayingMessageIdx(null);
+          setIsAudioPlaying(false);
+          playingMessageIdxRef.current = null;
+          isAudioPlayingRef.current = false;
+          currentUtteranceRef.current = null;
+        };
+
+        utterance.onerror = (event) => {
+          // Don't treat 'canceled' as a real error — it happens when we call stopTTS()
+          if (event.error === 'canceled' || event.error === 'interrupted') {
+            console.log('[tts] SpeechSynthesis canceled/interrupted (expected)');
+            return;
+          }
+          console.warn('[tts] SpeechSynthesis error:', event.error, '— falling back to ZAI TTS');
+          currentUtteranceRef.current = null;
+          // Fall back to ZAI TTS
+          if (playZAITTSRef.current) {
+            playZAITTSRef.current(text, messageIdx);
+          }
+        };
+
+        try {
+          window.speechSynthesis.speak(utterance);
+          return; // Successfully started — don't fall through to ZAI TTS
+        } catch (err) {
+          console.warn('[tts] SpeechSynthesis speak() failed, falling back to ZAI TTS:', err);
+          currentUtteranceRef.current = null;
+          // Fall through to ZAI TTS
+        }
+      }
+    }
+
+    // ── Fallback: ZAI TTS API ──
+    if (playZAITTSRef.current) {
+      await playZAITTSRef.current(text, messageIdx);
+    }
+  }, [playingMessageIdx, stopTTS, selectedPersona, pickBrowserVoice]);
+
+  // ZAI TTS fallback (original Web Audio API implementation)
+  const playZAITTS = useCallback(async (text: string, messageIdx: number) => {
+    setTtsLoading(messageIdx);
+
     try {
-      console.log(`[tts] Requesting TTS for message ${messageIdx}, text length: ${text.length}`);
+      console.log(`[tts] Requesting ZAI TTS for message ${messageIdx}, text length: ${text.length}`);
 
       const res = await fetch("/api/roleplay/tts", {
         method: "POST",
@@ -277,7 +434,7 @@ export default function Home() {
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         const errMsg = errData.error || `HTTP ${res.status}`;
-        console.warn("[tts] TTS request failed:", errMsg);
+        console.warn("[tts] ZAI TTS request failed:", errMsg);
         setTtsLoading(null);
         setTtsError(errMsg);
         return;
@@ -294,13 +451,13 @@ export default function Home() {
       // Get audio data as ArrayBuffer for Web Audio API
       const arrayBuffer = await res.arrayBuffer();
       if (arrayBuffer.byteLength < 100) {
-        console.warn("[tts] TTS returned empty audio, size:", arrayBuffer.byteLength);
+        console.warn("[tts] ZAI TTS returned empty audio, size:", arrayBuffer.byteLength);
         setTtsLoading(null);
         setTtsError('Empty audio response');
         return;
       }
 
-      console.log(`[tts] Got audio data: ${arrayBuffer.byteLength} bytes`);
+      console.log(`[tts] Got ZAI audio data: ${arrayBuffer.byteLength} bytes`);
 
       // Use Web Audio API for reliable playback (handles non-standard WAV chunks)
       let audioContext = ttsAudioContextRef.current;
@@ -332,7 +489,7 @@ export default function Home() {
       ttsSourceRef.current = source;
 
       source.onended = () => {
-        console.log('[tts] Audio playback ended');
+        console.log('[tts] ZAI Audio playback ended');
         setPlayingMessageIdx(null);
         setIsAudioPlaying(false);
         playingMessageIdxRef.current = null;
@@ -367,10 +524,10 @@ export default function Home() {
       };
 
       source.start(0);
-      console.log('[tts] Audio playing successfully via Web Audio API');
+      console.log('[tts] ZAI Audio playing successfully via Web Audio API');
 
     } catch (err: any) {
-      console.error('[tts] TTS error:', err);
+      console.error('[tts] ZAI TTS error:', err);
       stopTTS();
       const errName = err?.name || '';
       if (errName === 'NotAllowedError') {
@@ -379,7 +536,12 @@ export default function Home() {
         setTtsError('Voice unavailable');
       }
     }
-  }, [playingMessageIdx, stopTTS, selectedPersona]);
+  }, [selectedPersona, stopTTS]);
+
+  // Keep ZAI TTS ref updated
+  useEffect(() => {
+    playZAITTSRef.current = playZAITTS;
+  }, [playZAITTS]);
 
   // Keep ref updated to avoid stale closures in setTimeout/auto-voice
   useEffect(() => {
@@ -399,10 +561,10 @@ export default function Home() {
 
   // ─── Microphone Recording ───────────────────────────────────────────────────
 
-  const sendChatMessageWithText = useCallback(async (text: string) => {
+  const sendChatMessageWithText = useCallback(async (text: string, fromVoice = false) => {
     if (!text.trim() || !selectedPersona || isChatLoadingRef.current) return;
     const userMsg = text.trim();
-    setInputMode("text");
+    if (!fromVoice) setInputMode("text");
     setChatMessages(prev => [...prev, { role: "user", content: userMsg, timestamp: Date.now() }]);
     setIsChatLoading(true);
     isChatLoadingRef.current = true;
@@ -521,7 +683,7 @@ export default function Home() {
         });
         const data = await res.json();
         if (data.success && data.text && data.text.trim()) {
-          await sendChatMessageWithText(data.text.trim());
+          await sendChatMessageWithText(data.text.trim(), true);
         }
       } catch (err) {
         console.error("ASR error:", err);

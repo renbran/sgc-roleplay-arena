@@ -75,3 +75,36 @@ Stage Summary:
 - Auto-voice TTS now properly releases mic button when finished
 - Safety timeout ensures mic never gets permanently stuck
 - Lint passes clean, dev server compiles successfully
+
+---
+Task ID: 3
+Agent: Main
+Task: Fix voice irrelevance to persona (ZAI Chinese TTS voices don't match English-speaking personas) + fix mic button only works once (inputMode reset bug)
+
+Work Log:
+- Analyzed the root cause: ZAI TTS API only provides 7 Chinese-named voices (xiaochen, tongtong, chuichui, etc.) that speak English with a Chinese accent
+- These voices are completely irrelevant for personas like Faisal (Emirati), Sarah (British), Michael (Irish), Andrew (Australian), Rajesh (Indian), etc.
+- Previous session's "voice-persona mapping fix" only shuffled Chinese voices between personas — didn't solve the fundamental accent mismatch
+- Implemented browser SpeechSynthesis API as primary TTS engine — provides native English accents (British, Indian, Australian, Irish, American)
+- Created PERSONA_VOICE_PREFS mapping: 13 personas → appropriate browser voice preferences (lang + gender)
+  - Faisal/Omar/Imran/Tariq → en-GB male (British English suits Middle Eastern business context)
+  - Noura/Sarah/Dana/Fatima → en-GB female
+  - Rajesh/Vikram → en-IN male (Indian English accent!)
+  - Michael → en-IE male (Irish English!)
+  - Andrew → en-AU male (Australian English!)
+  - Maricel → en-US female
+- Implemented pickBrowserVoice() with progressive voice matching: exact lang → prefix → gender → any English
+- Added ZAI TTS as automatic fallback if SpeechSynthesis unavailable (using ref pattern to avoid circular deps)
+- Fixed mic button bug: sendChatMessageWithText was resetting inputMode="text" on every call, disabling the mic button on desktop after first voice input
+  - Added `fromVoice` parameter to sendChatMessageWithText
+  - Only set inputMode="text" when NOT from voice input
+  - Updated processRecordedAudio to pass `fromVoice=true`
+- Added voice preloading effect (voiceschanged event for Chrome)
+- Updated stopTTS to cancel both SpeechSynthesis and Web Audio API
+
+Stage Summary:
+- Voices now match persona nationality/gender using browser's native SpeechSynthesis (primary)
+- ZAI TTS serves as automatic fallback when browser voices unavailable
+- Mic button no longer gets stuck after first voice recording
+- Key persona-voice matches: Indian personas get Indian English, British gets British, Irish gets Irish, Australian gets Australian
+- Lint passes clean, app compiles and runs
