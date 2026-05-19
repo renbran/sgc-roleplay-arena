@@ -136,11 +136,11 @@ export default function Home() {
   const [playingMessageIdx, setPlayingMessageIdx] = useState<number | null>(null);
   const [ttsLoading, setTtsLoading] = useState<number | null>(null);
   const [autoVoice, setAutoVoice] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const ttsWarmedUp = useRef(false);
   const audioUnlockedRef = useRef(false);
-  const currentAudioUrlRef = useRef<string | null>(null);
   const [ttsError, setTtsError] = useState<string | null>(null);
+  const ttsAudioContextRef = useRef<AudioContext | null>(null);
+  const ttsSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
   // Microphone recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -193,19 +193,17 @@ export default function Home() {
 
   // ─── Audio Unlock (for mobile browsers) ──────────────────────────────────
   // Mobile browsers require a user gesture before audio can play.
-  // We unlock audio on the first tap/click anywhere on the page.
+  // We unlock the AudioContext on the first tap/click anywhere on the page.
   useEffect(() => {
     const unlock = () => {
       if (audioUnlockedRef.current) return;
       audioUnlockedRef.current = true;
-      // Create and immediately play/pause a silent audio to unlock the audio pipeline
-      const audio = new Audio();
-      audio.src = 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA/+M4wAAAAAAAAAAAAEluZm8AAAAPAAAAAgAAAbAAkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYgFssGAAAAAAAAAAAAAAAAAAAA/+M4wAAAAAAAAAAAAEluZm8AAAAPAAAAAgAAAbAAkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYgFssGAAAAAAAAAAAAAAAAAAAA';
-      audio.play().then(() => {
-        audio.pause();
-        audio.currentTime = 0;
-        console.log('[audio] Audio pipeline unlocked');
-      }).catch(() => { /* unlock failed, will try again on next interaction */ });
+      // Resume AudioContext on first user gesture
+      if (ttsAudioContextRef.current && ttsAudioContextRef.current.state === 'suspended') {
+        ttsAudioContextRef.current.resume().then(() => {
+          console.log('[audio] AudioContext unlocked');
+        }).catch(() => { /* unlock failed, will try again */ });
+      }
       document.removeEventListener('click', unlock);
       document.removeEventListener('touchstart', unlock);
       document.removeEventListener('keydown', unlock);
@@ -236,14 +234,9 @@ export default function Home() {
   // ─── Stop current TTS ───────────────────────────────────────────────────────
 
   const stopTTS = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-      audioRef.current = null;
-    }
-    if (currentAudioUrlRef.current) {
-      URL.revokeObjectURL(currentAudioUrlRef.current);
-      currentAudioUrlRef.current = null;
+    if (ttsSourceRef.current) {
+      try { ttsSourceRef.current.stop(); } catch { /* already stopped */ }
+      ttsSourceRef.current = null;
     }
     setPlayingMessageIdx(null);
     setIsAudioPlaying(false);
@@ -283,79 +276,76 @@ export default function Home() {
       }
 
       const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('audio') && !contentType.includes('mpeg')) {
+      if (!contentType.includes('audio') && !contentType.includes('wav') && !contentType.includes('mpeg')) {
         console.warn("[tts] Unexpected content type:", contentType);
         setTtsLoading(null);
         setTtsError('Invalid audio response');
         return;
       }
 
-      const audioBlob = await res.blob();
-      if (audioBlob.size < 100) {
-        console.warn("[tts] TTS returned empty audio, size:", audioBlob.size);
+      // Get audio data as ArrayBuffer for Web Audio API
+      const arrayBuffer = await res.arrayBuffer();
+      if (arrayBuffer.byteLength < 100) {
+        console.warn("[tts] TTS returned empty audio, size:", arrayBuffer.byteLength);
         setTtsLoading(null);
         setTtsError('Empty audio response');
         return;
       }
 
-      console.log(`[tts] Got audio blob: ${audioBlob.size} bytes, type: ${audioBlob.type}`);
+      console.log(`[tts] Got audio data: ${arrayBuffer.byteLength} bytes`);
 
-      const audioUrl = URL.createObjectURL(audioBlob);
-      currentAudioUrlRef.current = audioUrl;
+      // Use Web Audio API for reliable playback (handles non-standard WAV chunks)
+      let audioContext = ttsAudioContextRef.current;
+      if (!audioContext || audioContext.state === 'closed') {
+        audioContext = new AudioContext();
+        ttsAudioContextRef.current = audioContext;
+      }
 
-      const audio = new Audio();
-      audio.preload = 'auto';
-      audio.volume = 1.0;
-      audio.src = audioUrl;
-      audioRef.current = audio;
+      // Resume context if suspended (autoplay policy)
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
 
-      // Set up event handlers before playing
-      audio.oncanplaythrough = () => {
-        console.log('[tts] Audio can play through');
-      };
+      // Decode the WAV audio data
+      let audioBuffer: AudioBuffer;
+      try {
+        audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      } catch (decodeErr) {
+        console.error('[tts] Audio decode error:', decodeErr);
+        setTtsLoading(null);
+        setTtsError('Audio format not supported');
+        return;
+      }
 
-      audio.onended = () => {
+      // Create and play the audio source
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioContext.destination);
+      ttsSourceRef.current = source;
+
+      source.onended = () => {
         console.log('[tts] Audio playback ended');
         setPlayingMessageIdx(null);
         setIsAudioPlaying(false);
-        if (currentAudioUrlRef.current) {
-          URL.revokeObjectURL(currentAudioUrlRef.current);
-          currentAudioUrlRef.current = null;
-        }
-      };
-
-      audio.onerror = (e) => {
-        console.error('[tts] Audio playback error:', e, 'src:', audio.src?.substring(0, 50));
-        stopTTS();
-        setTtsError('Audio playback failed');
+        ttsSourceRef.current = null;
       };
 
       setPlayingMessageIdx(messageIdx);
       setIsAudioPlaying(true);
       setTtsLoading(null);
 
-      // Attempt to play - handle autoplay restrictions
-      try {
-        await audio.play();
-        console.log('[tts] Audio playing successfully');
-      } catch (playErr: any) {
-        const errName = playErr?.name || '';
-        if (errName === 'NotAllowedError') {
-          console.warn('[tts] Autoplay blocked - user interaction required');
-          // Don't fully stop - let user click again to retry
-          setPlayingMessageIdx(null);
-          setIsAudioPlaying(false);
-          setTtsError('Tap again to play audio');
-        } else {
-          console.error('[tts] Play error:', playErr);
-          stopTTS();
-          setTtsError('Audio playback error');
-        }
-      }
-    } catch (err) {
+      source.start(0);
+      console.log('[tts] Audio playing successfully via Web Audio API');
+
+    } catch (err: any) {
       console.error('[tts] TTS error:', err);
       stopTTS();
-      setTtsError('Voice unavailable');
+      const errName = err?.name || '';
+      if (errName === 'NotAllowedError') {
+        setTtsError('Tap again to play audio');
+      } else {
+        setTtsError('Voice unavailable');
+      }
     }
   }, [playingMessageIdx, stopTTS, selectedPersona]);
 

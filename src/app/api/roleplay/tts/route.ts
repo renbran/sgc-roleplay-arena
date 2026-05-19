@@ -2,25 +2,33 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-// z-ai voice mapping
-const ZAI_VOICE_MAP: Record<string, string> = {
-  "aura-2-cora-en": "kazi",
-  "aura-2-amalthea-en": "tongtong",
-  "aura-2-orion-en": "jam",
-  "aura-2-apollo-en": "jam",
-  "aura-2-arcas-en": "xiaochen",
-  "aura-2-luna-en": "tongtong",
-  "aura-2-helios-en": "douji",
-  "aura-2-atlas-en": "xiaochen",
-  // Direct z-ai voice names (pass through)
-  "kazi": "kazi",
-  "tongtong": "tongtong",
-  "jam": "jam",
-  "xiaochen": "xiaochen",
-  "douji": "douji",
-  "luodo": "luodo",
-  "chuichui": "chuichui",
-};
+// ZAI TTS voice descriptions:
+//   tongtong  - Warm and friendly (female)
+//   chuichui  - Lively and cute (female)
+//   xiaochen  - Calm and professional (male)
+//   jam       - British gentleman (male)
+//   kazi      - Clear and standard (neutral)
+//   douji     - Natural and fluent (male)
+//   luodo     - Expressive and infectious (male)
+const VALID_ZAI_VOICES = new Set([
+  "tongtong", "chuichui", "xiaochen", "jam", "kazi", "douji", "luodo",
+]);
+
+function mapVoice(voice: string): string {
+  if (VALID_ZAI_VOICES.has(voice)) return voice;
+  // Legacy aura-2 mappings (for backward compatibility)
+  const legacyMap: Record<string, string> = {
+    "aura-2-cora-en": "kazi",
+    "aura-2-amalthea-en": "tongtong",
+    "aura-2-orion-en": "jam",
+    "aura-2-apollo-en": "jam",
+    "aura-2-arcas-en": "xiaochen",
+    "aura-2-luna-en": "tongtong",
+    "aura-2-helios-en": "douji",
+    "aura-2-atlas-en": "xiaochen",
+  };
+  return legacyMap[voice] || "kazi";
+}
 
 // Singleton ZAI instance for performance
 let zaiInstance: any = null;
@@ -155,7 +163,7 @@ function buildWAV(pcmData: Buffer, sampleRate: number, numChannels: number, bits
 }
 
 async function callZaiTTS(text: string, voice: string): Promise<Buffer> {
-  const zaiVoice = ZAI_VOICE_MAP[voice] || "kazi";
+  const zaiVoice = mapVoice(voice);
   const chunks = splitTextIntoChunks(text, 900);
 
   return withRetry(async () => {
