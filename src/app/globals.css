@@ -118,5 +118,16 @@
   }
   body {
     @apply bg-background text-foreground;
+    /* Prevent overscroll bounce on mobile */
+    overscroll-behavior: none;
+    /* Better touch handling */
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Fix mobile viewport height issues (address bar / keyboard) */
+@supports (height: 100dvh) {
+  .min-h-screen {
+    min-height: 100dvh;
   }
 }

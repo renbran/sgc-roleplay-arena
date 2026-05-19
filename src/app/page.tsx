@@ -286,7 +286,7 @@ export default function Home() {
       setChatMessages(prev => [...prev, { role: "system", content: "Connection error. Please try again.", timestamp: Date.now() }]);
     }
     setIsChatLoading(false);
-  }, [selectedPersona, isChatLoading, chatSessionId, autoVoice, playTTS]);
+  }, [selectedPersona, isChatLoading, chatSessionId, autoVoice, playTTS, isRecording]);
 
   // ─── Voice Activity Detection (VAD) ─────────────────────────────────────────
 
@@ -1271,32 +1271,155 @@ export default function Home() {
 
   // ─── RENDER: Roleplay Session ───────────────────────────────────────────────
 
+  // ─── Sidebar content (shared between desktop & mobile sheet) ─────────────────
+  const renderSidebarContent = () => (
+    <div className="space-y-3">
+      <Card>
+        <CardHeader className="pb-3"><CardTitle className="text-sm">Persona Profile</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <div className="text-center">
+            <PersonaAvatar src={selectedPersona?.avatar || "/avatars/p1_faisal.png"} alt={selectedPersona?.name || "Persona"} size="md" />
+            <div className="font-semibold">{selectedPersona?.name}</div>
+            <div className="text-xs text-muted-foreground">{selectedPersona?.nationality} · Age {selectedPersona?.age}</div>
+            {selectedPersona && (
+              <div className="mt-2">{getPersonaTypeBadge(selectedPersona.id)}</div>
+            )}
+          </div>
+          <Separator />
+          <div>
+            <div className="text-xs font-medium mb-1 flex items-center gap-1"><Info className="w-3 h-3" /> Situation</div>
+            <p className="text-xs text-muted-foreground">{selectedPersona?.currentSituation}</p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-1"><TrendingUp className="w-4 h-4 text-sky-500" /> Conversation Flow</CardTitle></CardHeader>
+        <CardContent>
+          <div className="space-y-2">
+            {[
+              { key: "guarded", label: "1. Guarded", desc: "Build rapport, ask smart questions", icon: Shield },
+              { key: "warming", label: "2. Warming", desc: "Show industry understanding", icon: MessageSquare },
+              { key: "discovery", label: "3. Discovery", desc: "Probe specific pain points", icon: Target },
+              { key: "consideration", label: "4. Open", desc: "Discuss solutions & next steps", icon: CheckCircle2 },
+            ].map((s, i) => {
+              const stages = ["guarded", "warming", "discovery", "consideration"];
+              const currentIdx = stages.indexOf(conversationStage);
+              const thisIdx = i;
+              const isActive = conversationStage === s.key;
+              const isComplete = currentIdx > thisIdx;
+              return (
+                <div
+                  key={s.key}
+                  className={`flex items-start gap-2 p-2 rounded text-xs transition-all ${
+                    isActive ? "bg-sky-50 border border-sky-200" :
+                    isComplete ? "bg-emerald-50 border border-emerald-100 opacity-70" :
+                    "bg-slate-50 border border-slate-100 opacity-50"
+                  }`}
+                >
+                  <s.icon className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${
+                    isActive ? "text-sky-500" :
+                    isComplete ? "text-emerald-500" :
+                    "text-slate-400"
+                  }`} />
+                  <div>
+                    <div className={`font-medium ${
+                      isActive ? "text-sky-700" :
+                      isComplete ? "text-emerald-700 line-through" :
+                      "text-slate-500"
+                    }`}>{s.label}</div>
+                    <div className={`${
+                      isActive ? "text-sky-600" :
+                      isComplete ? "text-emerald-600" :
+                      "text-slate-400"
+                    }`}>{s.desc}</div>
+                  </div>
+                  {isComplete && <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0 ml-auto" />}
+                  {isActive && <div className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-pulse shrink-0 ml-auto mt-1" />}
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-1"><Shield className="w-4 h-4 text-amber-500" /> Objections</CardTitle></CardHeader>
+        <CardContent>
+          <ScrollArea className="max-h-32">
+            <ul className="space-y-1.5">
+              {selectedPersona?.objections.map((obj, i) => (
+                <li key={i} className="text-xs flex items-start gap-2 p-1.5 rounded bg-amber-50">
+                  <span className="font-bold text-amber-600">{i + 1}</span><span className="text-amber-800">{obj}</span>
+                </li>
+              ))}
+            </ul>
+          </ScrollArea>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-1"><Target className="w-4 h-4 text-emerald-500" /> How to Win</CardTitle></CardHeader>
+        <CardContent>
+          <ScrollArea className="max-h-32">
+            <ul className="space-y-1.5">
+              {selectedPersona?.winConditions.map((cond, i) => (
+                <li key={i} className="text-xs flex items-start gap-2 p-1.5 rounded bg-emerald-50">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0 mt-0.5" /><span className="text-emerald-800">{cond}</span>
+                </li>
+              ))}
+            </ul>
+          </ScrollArea>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-1"><XCircle className="w-4 h-4 text-red-500" /> How to Lose</CardTitle></CardHeader>
+        <CardContent>
+          <ScrollArea className="max-h-32">
+            <ul className="space-y-1.5">
+              {selectedPersona?.loseConditions.map((cond, i) => (
+                <li key={i} className="text-xs flex items-start gap-2 p-1.5 rounded bg-red-50">
+                  <XCircle className="w-3 h-3 text-red-500 shrink-0 mt-0.5" /><span className="text-red-800">{cond}</span>
+                </li>
+              ))}
+            </ul>
+          </ScrollArea>
+        </CardContent>
+      </Card>
+    </div>
+  );
+
   const renderRoleplay = () => (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
+    <div className={isMobile ? "space-y-2" : "space-y-6"}>
+      {/* Header - compact on mobile */}
+      <div className={`flex ${isMobile ? "flex-col gap-2" : "flex-col sm:flex-row sm:items-center justify-between gap-3"}`}>
+        <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={() => {
             if (roleplayStatus === "active") {
               if (confirm("End the current session?")) handleEndSession();
             }
             setView("dashboard"); setRoleplayStatus("idle");
-          }}>Back</Button>
+          }} className="shrink-0">
+            {isMobile ? "←" : "Back"}
+          </Button>
           {selectedPersona && (
-            <div className="flex items-center gap-2">
-              <PersonaAvatar src={selectedPersona.avatar} alt={selectedPersona.name} size="md" />
-              <div>
-                <div className="font-semibold">{selectedPersona.name}</div>
-                <div className="text-xs text-muted-foreground">{selectedPersona.title} · {selectedPersona.company}</div>
+            <div className="flex items-center gap-2 min-w-0">
+              <PersonaAvatar src={selectedPersona.avatar} alt={selectedPersona.name} size={isMobile ? "sm" : "md"} />
+              <div className="min-w-0">
+                <div className={`font-semibold truncate ${isMobile ? "text-sm" : ""}`}>{selectedPersona.name}</div>
+                {!isMobile && <div className="text-xs text-muted-foreground">{selectedPersona.title} · {selectedPersona.company}</div>}
               </div>
             </div>
           )}
-          <div className="hidden sm:flex items-center gap-1.5 ml-2 px-2 py-1 rounded-md bg-slate-50 border border-slate-200">
-            <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={16} height={16} className="rounded-sm" />
-            <span className="text-[10px] font-semibold text-slate-500 tracking-wide">SGC TECH</span>
-          </div>
+          {!isMobile && (
+            <div className="hidden sm:flex items-center gap-1.5 ml-2 px-2 py-1 rounded-md bg-slate-50 border border-slate-200">
+              <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={16} height={16} className="rounded-sm" />
+              <span className="text-[10px] font-semibold text-slate-500 tracking-wide">SGC TECH</span>
+            </div>
+          )}
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 flex-wrap">
           {getDiffBadge(selectedPersona?.difficulty || "medium")}
           {selectedPersona && getPersonaTypeBadge(selectedPersona.id)}
           <Badge variant={mode === "text" ? "default" : "outline"} className="gap-1">
@@ -1308,36 +1431,23 @@ export default function Home() {
             </div>
           )}
           {/* Conversation Stage Indicator */}
-          {roleplayStatus === "active" && (
-            <div className="flex items-center gap-1.5">
-              {(() => {
-                const stageConfig: Record<string, { label: string; color: string; icon: typeof Target; tip: string }> = {
-                  guarded: { label: "Guarded", color: "bg-slate-100 text-slate-600 border-slate-200", icon: Shield, tip: "Persona is guarded — build rapport and ask smart questions" },
-                  warming: { label: "Warming", color: "bg-amber-50 text-amber-600 border-amber-200", icon: MessageSquare, tip: "Persona is warming up — ask specific questions about their challenges" },
-                  discovery: { label: "Discovery", color: "bg-sky-50 text-sky-600 border-sky-200", icon: Target, tip: "Pain discovery happening — probe deeper into specific pain points" },
-                  consideration: { label: "Open", color: "bg-emerald-50 text-emerald-600 border-emerald-200", icon: CheckCircle2, tip: "Persona is open — discuss solutions and propose next steps" },
-                };
-                const cfg = stageConfig[conversationStage] || stageConfig.guarded;
-                return (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger>
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border ${cfg.color}`}>
-                          <cfg.icon className="w-2.5 h-2.5" />
-                          {cfg.label}
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom" className="text-xs max-w-[220px]">
-                        {cfg.tip}
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                );
-              })()}
-            </div>
-          )}
-          {/* Auto-Voice Toggle - only show in text chat mode */}
-          {mode === "text" && roleplayStatus === "active" && (
+          {roleplayStatus === "active" && (() => {
+            const stageConfig: Record<string, { label: string; color: string; icon: typeof Target }> = {
+              guarded: { label: "Guarded", color: "bg-slate-100 text-slate-600 border-slate-200", icon: Shield },
+              warming: { label: "Warming", color: "bg-amber-50 text-amber-600 border-amber-200", icon: MessageSquare },
+              discovery: { label: "Discovery", color: "bg-sky-50 text-sky-600 border-sky-200", icon: Target },
+              consideration: { label: "Open", color: "bg-emerald-50 text-emerald-600 border-emerald-200", icon: CheckCircle2 },
+            };
+            const cfg = stageConfig[conversationStage] || stageConfig.guarded;
+            return (
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border ${cfg.color}`}>
+                <cfg.icon className="w-2.5 h-2.5" />
+                {cfg.label}
+              </span>
+            );
+          })()}
+          {/* Auto-Voice Toggle - only show in text chat mode, desktop only */}
+          {mode === "text" && roleplayStatus === "active" && !isMobile && (
             <div className="flex items-center gap-2">
               <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
                 <Volume2 className="w-3.5 h-3.5" />
@@ -1350,132 +1460,38 @@ export default function Home() {
               </label>
             </div>
           )}
+          {/* Mobile sidebar toggle */}
+          {isMobile && (
+            <Sheet open={showMobileSidebar} onOpenChange={setShowMobileSidebar}>
+              <SheetTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-1">
+                  <PanelRightOpen className="w-3.5 h-3.5" />
+                  <span className="text-[10px]">Info</span>
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="right" className="w-[300px] overflow-y-auto p-4">
+                <SheetHeader className="p-0 pb-2">
+                  <SheetTitle className="text-sm">Session Info</SheetTitle>
+                </SheetHeader>
+                {renderSidebarContent()}
+              </SheetContent>
+            </Sheet>
+          )}
         </div>
       </div>
 
       {/* Main Area */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2">
+      <div className={`grid grid-cols-1 ${isMobile ? "" : "lg:grid-cols-3"} ${isMobile ? "gap-2" : "gap-6"}`}>
+        <div className={isMobile ? "" : "lg:col-span-2"}>
           {renderChatArea()}
         </div>
 
-        {/* Sidebar: Persona Info */}
-        <div className="space-y-4">
-          <Card>
-            <CardHeader className="pb-3"><CardTitle className="text-sm">Persona Profile</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <div className="text-center">
-                <PersonaAvatar src={selectedPersona?.avatar || "/avatars/p1_faisal.png"} alt={selectedPersona?.name || "Persona"} size="md" />
-                <div className="font-semibold">{selectedPersona?.name}</div>
-                <div className="text-xs text-muted-foreground">{selectedPersona?.nationality} · Age {selectedPersona?.age}</div>
-                {selectedPersona && (
-                  <div className="mt-2">{getPersonaTypeBadge(selectedPersona.id)}</div>
-                )}
-              </div>
-              <Separator />
-              <div>
-                <div className="text-xs font-medium mb-1 flex items-center gap-1"><Info className="w-3 h-3" /> Situation</div>
-                <p className="text-xs text-muted-foreground">{selectedPersona?.currentSituation}</p>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-1"><TrendingUp className="w-4 h-4 text-sky-500" /> Conversation Flow</CardTitle></CardHeader>
-            <CardContent>
-              <div className="space-y-2">
-                {[
-                  { key: "guarded", label: "1. Guarded", desc: "Build rapport, ask smart questions", icon: Shield },
-                  { key: "warming", label: "2. Warming", desc: "Show industry understanding", icon: MessageSquare },
-                  { key: "discovery", label: "3. Discovery", desc: "Probe specific pain points", icon: Target },
-                  { key: "consideration", label: "4. Open", desc: "Discuss solutions & next steps", icon: CheckCircle2 },
-                ].map((s, i) => {
-                  const stages = ["guarded", "warming", "discovery", "consideration"];
-                  const currentIdx = stages.indexOf(conversationStage);
-                  const thisIdx = i;
-                  const isActive = conversationStage === s.key;
-                  const isComplete = currentIdx > thisIdx;
-                  const isFuture = currentIdx < thisIdx;
-                  return (
-                    <div
-                      key={s.key}
-                      className={`flex items-start gap-2 p-2 rounded text-xs transition-all ${
-                        isActive ? "bg-sky-50 border border-sky-200" :
-                        isComplete ? "bg-emerald-50 border border-emerald-100 opacity-70" :
-                        "bg-slate-50 border border-slate-100 opacity-50"
-                      }`}
-                    >
-                      <s.icon className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${
-                        isActive ? "text-sky-500" :
-                        isComplete ? "text-emerald-500" :
-                        "text-slate-400"
-                      }`} />
-                      <div>
-                        <div className={`font-medium ${
-                          isActive ? "text-sky-700" :
-                          isComplete ? "text-emerald-700 line-through" :
-                          "text-slate-500"
-                        }`}>{s.label}</div>
-                        <div className={`${
-                          isActive ? "text-sky-600" :
-                          isComplete ? "text-emerald-600" :
-                          "text-slate-400"
-                        }`}>{s.desc}</div>
-                      </div>
-                      {isComplete && <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0 ml-auto" />}
-                      {isActive && <div className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-pulse shrink-0 ml-auto mt-1" />}
-                    </div>
-                  );
-                })}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-1"><Shield className="w-4 h-4 text-amber-500" /> Objections</CardTitle></CardHeader>
-            <CardContent>
-              <ScrollArea className="max-h-48">
-                <ul className="space-y-2">
-                  {selectedPersona?.objections.map((obj, i) => (
-                    <li key={i} className="text-xs flex items-start gap-2 p-2 rounded bg-amber-50">
-                      <span className="font-bold text-amber-600">{i + 1}</span><span className="text-amber-800">{obj}</span>
-                    </li>
-                  ))}
-                </ul>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-1"><Target className="w-4 h-4 text-emerald-500" /> How to Win</CardTitle></CardHeader>
-            <CardContent>
-              <ScrollArea className="max-h-48">
-                <ul className="space-y-2">
-                  {selectedPersona?.winConditions.map((cond, i) => (
-                    <li key={i} className="text-xs flex items-start gap-2 p-2 rounded bg-emerald-50">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0 mt-0.5" /><span className="text-emerald-800">{cond}</span>
-                    </li>
-                  ))}
-                </ul>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-1"><XCircle className="w-4 h-4 text-red-500" /> How to Lose</CardTitle></CardHeader>
-            <CardContent>
-              <ScrollArea className="max-h-48">
-                <ul className="space-y-2">
-                  {selectedPersona?.loseConditions.map((cond, i) => (
-                    <li key={i} className="text-xs flex items-start gap-2 p-2 rounded bg-red-50">
-                      <XCircle className="w-3 h-3 text-red-500 shrink-0 mt-0.5" /><span className="text-red-800">{cond}</span>
-                    </li>
-                  ))}
-                </ul>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-        </div>
+        {/* Sidebar: Desktop only */}
+        {!isMobile && (
+          <div className="space-y-4">
+            {renderSidebarContent()}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1661,7 +1677,7 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full">
+      <main className={`flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 w-full ${isMobile && view === "roleplay" ? "py-2" : "py-6"}`}>
         <AnimatePresence mode="wait">
           <motion.div key={view} initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }} transition={{ duration: 0.2 }}>
             {view === "dashboard" && renderDashboard()}

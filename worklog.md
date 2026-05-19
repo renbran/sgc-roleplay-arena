@@ -46,3 +46,55 @@ Stage Summary:
 - Voice recording no longer stops prematurely (3.5s silence duration instead of 1.8s)
 - Frontend shows conversation stage indicators and progress guidance
 - Chat API returns stage information and injects stage enforcement
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: Fix mobile compatibility and voice/text input conflict causing conversation cutoff
+
+Work Log:
+- Analyzed the full page.tsx (~1700 lines) to identify mobile issues
+- Identified root causes:
+  1. Both voice recording AND text input were always visible and usable simultaneously - no mutual exclusion
+  2. Sidebar always visible on mobile pushed chat area off screen
+  3. Fixed viewport heights (100vh) don't account for mobile browser chrome (address bar, keyboard)
+  4. No touch-friendly controls or mobile-specific input mode toggle
+- Added `inputMode` state ("text" | "voice") to control which input method is active
+- Added `isMobile` hook integration (from existing useIsMobile hook)
+- Added `showMobileSidebar` state for Sheet-based sidebar toggle on mobile
+- Added Sheet component import from shadcn/ui for mobile slide-out sidebar
+- Added PanelRightOpen and Keyboard icons from lucide-react
+- Made voice/text inputs mutually exclusive:
+  - When in "text" input mode: text input enabled, mic button disabled
+  - When in "voice" input mode: mic button enabled, text input hidden on mobile / disabled on desktop
+  - startRecording checks for chatInput content and blocks if text is present
+  - sendChatMessageWithText blocks if isRecording
+  - Switching input modes clears the other mode's state
+- Rewrote renderChatArea() with mobile-first design:
+  - Mobile: Type/Voice toggle buttons above input bar
+  - Mobile: Text input hidden in voice mode, replaced with "Tap mic to speak" prompt
+  - Mobile: dvh-based heights instead of vh for proper mobile viewport
+  - Desktop: Both inputs visible but mutually exclusive via enabled/disabled states
+  - Voice play button always visible on mobile (touch-friendly), hover-only on desktop
+  - End Call button shows "End" text on mobile for clarity
+- Rewrote renderRoleplay() for mobile compatibility:
+  - Extracted sidebar content into renderSidebarContent() shared function
+  - Mobile: Sidebar moved to Sheet (slide-out panel) with "Info" button trigger
+  - Mobile: Compact header with smaller avatar, truncated text
+  - Mobile: Reduced spacing (space-y-2 vs space-y-6)
+  - Desktop: Unchanged layout with inline sidebar
+- Updated globals.css:
+  - Added overscroll-behavior: none to prevent mobile bounce scroll
+  - Added -webkit-tap-highlight-color: transparent for better touch UX
+  - Added @supports (height: 100dvh) rule for proper mobile viewport heights
+- Reduced main padding when in mobile roleplay view (py-2 vs py-6)
+- All lint checks pass cleanly
+- Dev server compiles successfully
+
+Stage Summary:
+- Voice and text input are now mutually exclusive - can't do both simultaneously
+- Mobile gets Type/Voice toggle buttons to switch input mode
+- Mobile sidebar moves to a slide-out Sheet panel (via "Info" button)
+- Mobile viewport heights use dvh for proper address bar handling
+- Touch-friendly controls with larger tap targets and always-visible play buttons
+- No more conversation cutoff from conflicting voice+text inputs
