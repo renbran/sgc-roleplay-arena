@@ -270,7 +270,7 @@ export default function Home() {
       const res = await fetch("/api/roleplay/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: text.slice(0, 1024), voice: "kazi" }),
+        body: JSON.stringify({ text: text.slice(0, 1024), voice: selectedPersona?.voiceId || "kazi" }),
       });
 
       if (!res.ok) {
@@ -357,7 +357,7 @@ export default function Home() {
       stopTTS();
       setTtsError('Voice unavailable');
     }
-  }, [playingMessageIdx, stopTTS]);
+  }, [playingMessageIdx, stopTTS, selectedPersona]);
 
   // ─── Microphone Recording ───────────────────────────────────────────────────
 

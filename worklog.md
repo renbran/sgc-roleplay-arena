@@ -71,3 +71,28 @@ Stage Summary:
 - Audio playback should now work on mobile with the audio unlock mechanism
 - Visual feedback for all TTS states (loading, playing, error)
 - Auto-voice works on mobile when audio pipeline is unlocked
+
+---
+Task ID: 3
+Agent: Main Agent
+Task: Fix voice persona mapping - each persona should have a relevant voice
+
+Work Log:
+- Analyzed all 13 personas: gender, nationality, personality traits
+- Mapped each persona to the best matching z-ai TTS voice:
+  - **jam** (British gentleman, authoritative): Faisal (Emirati MD), Omar (Jordanian Finance Dir), Imran (Pakistani CFO) — senior male authority figures
+  - **xiaochen** (calm, professional, measured): Rajesh (Indian GM), Vikram (Indian GM), Tariq (Pakistani IT Manager) — analytical/direct male roles
+  - **douji** (natural, friendly): Michael (Irish CFO), Andrew (Australian CFO) — approachable male roles
+  - **tongtong** (warm, friendly): Noura (Emirati COO), Maricel (Filipino Office Manager), Dana (Lebanese EA) — warm female roles
+  - **kazi** (clear, standard): Sarah (British CFO), Fatima (Emirati Procurement Manager) — precise, exacting female roles
+- Updated personas/index.ts: changed all voiceId from Aura-2 names to z-ai voice names
+- Updated page.tsx: playTTS now sends `selectedPersona?.voiceId || "kazi"` instead of hardcoded "kazi"
+- Added selectedPersona to playTTS dependency array
+- Added luodo and chuichui voices to TTS route voice mapping
+- Tested all 5 voices: jam, tongtong, xiaochen, douji, kazi — all return valid WAV audio (200 OK)
+
+Stage Summary:
+- Each persona now has a distinct, appropriate voice matching their gender and personality
+- Male personas use jam (authoritative), xiaochen (professional), or douji (friendly)
+- Female personas use tongtong (warm) or kazi (clear/precise)
+- Frontend correctly passes the persona's voiceId to the TTS API

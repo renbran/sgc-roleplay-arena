@@ -12,11 +12,14 @@ const ZAI_VOICE_MAP: Record<string, string> = {
   "aura-2-luna-en": "tongtong",
   "aura-2-helios-en": "douji",
   "aura-2-atlas-en": "xiaochen",
+  // Direct z-ai voice names (pass through)
   "kazi": "kazi",
   "tongtong": "tongtong",
   "jam": "jam",
   "xiaochen": "xiaochen",
   "douji": "douji",
+  "luodo": "luodo",
+  "chuichui": "chuichui",
 };
 
 // Singleton ZAI instance for performance
