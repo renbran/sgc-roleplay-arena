@@ -2,35 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-// Deepgram voice model mapping - using Aura-2 voices
-const DEEPGRAM_VOICE_MAP: Record<string, string> = {
-  // Female voices
-  "kazi": "aura-2-cora-en",
-  "female-warm": "aura-2-cora-en",
-  "female-precise": "aura-2-amalthea-en",
-  "female-calm": "aura-2-luna-en",
-  // Male voices
-  "jam": "aura-2-orion-en",
-  "male-deep": "aura-2-apollo-en",
-  "male-authoritative": "aura-2-arcas-en",
-  "male-friendly": "aura-2-helios-en",
-  "male-direct": "aura-2-atlas-en",
-};
-
-// Map persona Deepgram voice IDs to z-ai-web-dev-sdk voices
-// z-ai available voices: tongtong, chuichui, xiaochen, jam, kazi, douji, luodo
+// z-ai voice mapping - using available z-ai voices
 const ZAI_VOICE_MAP: Record<string, string> = {
-  "aura-2-cora-en": "kazi",         // Female - warm, professional → kazi (清晰标准)
-  "aura-2-amalthea-en": "tongtong",  // Female - clear, composed → tongtong (温暖亲切)
-  "aura-2-orion-en": "jam",          // Male - deep, authoritative → jam (英音绅士)
-  "aura-2-apollo-en": "jam",         // Male - confident → jam
-  "aura-2-arcas-en": "xiaochen",     // Male - measured → xiaochen (沉稳专业)
-  "aura-2-luna-en": "tongtong",      // Female - calm → tongtong
-  "aura-2-helios-en": "douji",       // Male - friendly → douji (自然流畅)
-  "aura-2-atlas-en": "xiaochen",     // Male - direct → xiaochen
+  "aura-2-cora-en": "kazi",         // Female - warm, professional
+  "aura-2-amalthea-en": "tongtong",  // Female - clear, composed
+  "aura-2-orion-en": "jam",          // Male - deep, authoritative
+  "aura-2-apollo-en": "jam",         // Male - confident
+  "aura-2-arcas-en": "xiaochen",     // Male - measured
+  "aura-2-luna-en": "tongtong",      // Female - calm
+  "aura-2-helios-en": "douji",       // Male - friendly
+  "aura-2-atlas-en": "xiaochen",     // Male - direct
+  // Direct z-ai voice names
+  "kazi": "kazi",
+  "tongtong": "tongtong",
+  "jam": "jam",
+  "xiaochen": "xiaochen",
+  "douji": "douji",
 };
 
-// Split text into chunks of max 1024 characters for z-ai TTS
+// Split text into chunks of max 1000 characters for z-ai TTS
 function splitTextIntoChunks(text: string, maxLength = 1000): string[] {
   if (text.length <= maxLength) return [text];
 
@@ -51,73 +41,63 @@ function splitTextIntoChunks(text: string, maxLength = 1000): string[] {
   return chunks;
 }
 
-async function callDeepgramTTS(text: string, voice: string): Promise<Buffer> {
-  const deepgramApiKey = process.env.DEEPGRAM_API_KEY;
-  if (!deepgramApiKey) throw new Error("DEEPGRAM_API_KEY not set");
-
-  const resolvedVoice = DEEPGRAM_VOICE_MAP[voice] || voice;
-
-  const response = await fetch(
-    `https://api.deepgram.com/v1/speak?model=${resolvedVoice}&encoding=mp3`,
-    {
-      method: "POST",
-      headers: {
-        "Authorization": `Token ${deepgramApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ text }),
+// Retry helper with exponential backoff
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2, baseDelay = 1000): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.warn(`[tts] Attempt ${attempt + 1} failed, retrying in ${delay}ms...`, err instanceof Error ? err.message : err);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
     }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => "Unknown error");
-    console.error("[tts] Deepgram API error:", response.status, errorText);
-    throw new Error(`Deepgram TTS failed: ${response.status}`);
   }
-
-  const audioBuffer = await response.arrayBuffer();
-  return Buffer.from(new Uint8Array(audioBuffer));
+  throw lastError;
 }
 
 async function callZaiTTS(text: string, voice: string): Promise<Buffer> {
-  const ZAI = (await import("z-ai-web-dev-sdk")).default;
-  const zai = await ZAI.create();
-
-  // Map Deepgram voice to z-ai voice
   const zaiVoice = ZAI_VOICE_MAP[voice] || "kazi";
 
-  // Split text if it exceeds 1024 characters
-  const chunks = splitTextIntoChunks(text, 1000);
+  return withRetry(async () => {
+    const ZAI = (await import("z-ai-web-dev-sdk")).default;
+    const zai = await ZAI.create();
 
-  if (chunks.length === 1) {
-    const response = await zai.audio.tts.create({
-      input: text,
-      voice: zaiVoice,
-      speed: 1.0,
-      response_format: "wav",
-      stream: false,
-    });
+    const chunks = splitTextIntoChunks(text, 1000);
 
-    const arrayBuffer = await response.arrayBuffer();
-    return Buffer.from(new Uint8Array(arrayBuffer));
-  }
+    if (chunks.length === 1) {
+      const response = await zai.audio.tts.create({
+        input: text,
+        voice: zaiVoice,
+        speed: 1.0,
+        response_format: "wav",
+        stream: false,
+      });
 
-  // For multi-chunk text, generate each chunk and concatenate
-  const buffers: Buffer[] = [];
-  for (const chunk of chunks) {
-    const response = await zai.audio.tts.create({
-      input: chunk,
-      voice: zaiVoice,
-      speed: 1.0,
-      response_format: "wav",
-      stream: false,
-    });
+      const arrayBuffer = await response.arrayBuffer();
+      return Buffer.from(new Uint8Array(arrayBuffer));
+    }
 
-    const arrayBuffer = await response.arrayBuffer();
-    buffers.push(Buffer.from(new Uint8Array(arrayBuffer)));
-  }
+    // For multi-chunk text, generate each chunk and concatenate
+    const buffers: Buffer[] = [];
+    for (const chunk of chunks) {
+      const response = await zai.audio.tts.create({
+        input: chunk,
+        voice: zaiVoice,
+        speed: 1.0,
+        response_format: "wav",
+        stream: false,
+      });
 
-  return Buffer.concat(buffers);
+      const arrayBuffer = await response.arrayBuffer();
+      buffers.push(Buffer.from(new Uint8Array(arrayBuffer)));
+    }
+
+    return Buffer.concat(buffers);
+  }, 2, 1500);
 }
 
 export async function POST(req: NextRequest) {
@@ -130,32 +110,22 @@ export async function POST(req: NextRequest) {
 
     const truncatedText = text.slice(0, 2000);
 
-    // Try Deepgram first, fall back to z-ai-web-dev-sdk
+    // Use z-ai-web-dev-sdk as primary TTS provider (with retry for cold start)
     let audioBuffer: Buffer;
-    let provider = "deepgram";
 
     try {
-      audioBuffer = await callDeepgramTTS(truncatedText, voice);
-    } catch (deepgramError) {
-      console.warn("[tts] Deepgram unavailable, falling back to z-ai-web-dev-sdk:", deepgramError instanceof Error ? deepgramError.message : deepgramError);
-      provider = "zai";
-      try {
-        audioBuffer = await callZaiTTS(truncatedText, voice);
-      } catch (zaiError) {
-        console.error("[tts] Both TTS providers failed:", zaiError);
-        throw new Error("All TTS providers unavailable");
-      }
+      audioBuffer = await callZaiTTS(truncatedText, voice);
+    } catch (zaiError) {
+      console.error("[tts] z-ai TTS failed after retries:", zaiError instanceof Error ? zaiError.message : zaiError);
+      throw new Error("TTS generation failed - service unavailable");
     }
-
-    const contentType = provider === "deepgram" ? "audio/mpeg" : "audio/wav";
 
     return new NextResponse(audioBuffer, {
       status: 200,
       headers: {
-        "Content-Type": contentType,
+        "Content-Type": "audio/wav",
         "Content-Length": audioBuffer.length.toString(),
         "Cache-Control": "no-cache",
-        "X-TTS-Provider": provider,
       },
     });
   } catch (error) {
@@ -164,5 +134,17 @@ export async function POST(req: NextRequest) {
       { error: error instanceof Error ? error.message : "TTS generation failed" },
       { status: 500 }
     );
+  }
+}
+
+// Warmup endpoint - GET request to pre-initialize the z-ai SDK
+export async function GET() {
+  try {
+    const ZAI = (await import("z-ai-web-dev-sdk")).default;
+    await ZAI.create();
+    return NextResponse.json({ warmup: true, provider: "zai" });
+  } catch (err) {
+    console.error("[tts] Warmup failed:", err);
+    return NextResponse.json({ warmup: false, error: err instanceof Error ? err.message : "Unknown" });
   }
 }

@@ -11,7 +11,7 @@ import {
   Info, Sparkles, Headphones, MessageSquare, Award,
   BookOpen, Play, StopCircle, Pause, Send, Type,
   MessageCircle, Bot, CornerDownLeft, Lock, Eye, EyeOff, LogOut,
-  PanelRightOpen, Keyboard
+  PanelRightOpen, Keyboard, AlertCircle
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,7 +31,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 // ─── Auth Config ────────────────────────────────────────────────────────────
 
 const AUTH_STORAGE_KEY = "sgc-roleplay-auth";
-const APP_PASSWORD = "SGC2025"; // Change this to your desired password
+const APP_PASSWORD = "SGC2025";
 
 // ─── Persona Type Mapping ────────────────────────────────────────────────────
 
@@ -57,24 +57,6 @@ const PERSONA_TYPE_CONFIG = {
   "influencer": { label: "Influencer", color: "bg-sky-100 text-sky-700 border-sky-200", icon: "🎯" },
 } as const;
 
-// ─── Deepgram Voice Mapping ─────────────────────────────────────────────────
-
-// Maps persona voiceId to Deepgram Aura-2 voice model
-const DEEPGRAM_VOICE_MAP: Record<string, string> = {
-  "aura-2-cora-en": "aura-2-cora-en",       // Female - warm, professional
-  "aura-2-amalthea-en": "aura-2-amalthea-en", // Female - clear, composed
-  "aura-2-orion-en": "aura-2-orion-en",       // Male - deep, authoritative
-  "aura-2-apollo-en": "aura-2-apollo-en",     // Male - confident
-  "aura-2-arcas-en": "aura-2-arcas-en",       // Male - measured
-  "aura-2-luna-en": "aura-2-luna-en",         // Female - calm
-  "aura-2-helios-en": "aura-2-helios-en",     // Male - friendly
-  "aura-2-atlas-en": "aura-2-atlas-en",       // Male - direct
-};
-
-function getDeepgramVoice(persona: Persona): string {
-  return DEEPGRAM_VOICE_MAP[persona.voiceId] || "aura-2-cora-en";
-}
-
 // ─── Avatar Component ────────────────────────────────────────────────────────
 
 function PersonaAvatar({ src, alt, size = "md" }: { src: string; alt: string; size?: "xs" | "sm" | "md" | "lg" | "xl" }) {
@@ -88,7 +70,7 @@ function PersonaAvatar({ src, alt, size = "md" }: { src: string; alt: string; si
   const s = sizeMap[size];
   return (
     <div className={`${s.container} rounded-full overflow-hidden bg-gradient-to-br from-slate-100 to-slate-200 shrink-0`}>
-      <Image src={src} alt={alt} width={s.img} height={s.img} className="w-full h-full object-cover" />
+      <Image src={src} alt={alt} width={s.img} height={s.img} className="w-full h-full object-cover" unoptimized />
     </div>
   );
 }
@@ -140,7 +122,7 @@ export default function Home() {
   const [callTimer, setCallTimer] = useState(0);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const isMobile = useIsMobile();
-  const [inputMode, setInputMode] = useState<"text" | "voice">("text"); // Controls which input is active within roleplay
+  const [inputMode, setInputMode] = useState<"text" | "voice">("text");
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
 
   // Text chat state
@@ -155,6 +137,7 @@ export default function Home() {
   const [ttsLoading, setTtsLoading] = useState<number | null>(null);
   const [autoVoice, setAutoVoice] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsWarmedUp = useRef(false);
 
   // Microphone recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -205,6 +188,19 @@ export default function Home() {
     setAuthPassword("");
   };
 
+  // ─── TTS Warmup ──────────────────────────────────────────────────────────
+
+  // Pre-warm the TTS service when authenticated so first call doesn't fail
+  useEffect(() => {
+    if (isAuthenticated && !ttsWarmedUp.current) {
+      ttsWarmedUp.current = true;
+      fetch("/api/roleplay/tts", { method: "GET" })
+        .then(res => res.json())
+        .then(data => console.log("[tts] warmup:", data.warmup ? "success" : "failed"))
+        .catch(() => { /* warmup failure is non-critical */ });
+    }
+  }, [isAuthenticated]);
+
   // ─── TTS Playback ───────────────────────────────────────────────────────────
 
   const playTTS = useCallback(async (text: string, messageIdx: number) => {
@@ -219,16 +215,26 @@ export default function Home() {
     setTtsLoading(messageIdx);
 
     try {
-      const voice = selectedPersona ? getDeepgramVoice(selectedPersona) : "aura-2-cora-en";
       const res = await fetch("/api/roleplay/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: text.slice(0, 2000), voice }),
+        body: JSON.stringify({ text: text.slice(0, 2000), voice: "kazi" }),
       });
 
-      if (!res.ok) throw new Error("TTS failed");
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        console.warn("TTS failed:", errData.error || res.status);
+        setTtsLoading(null);
+        return; // Graceful failure - don't throw, just skip TTS
+      }
 
       const audioBlob = await res.blob();
+      if (audioBlob.size < 100) {
+        console.warn("TTS returned empty audio");
+        setTtsLoading(null);
+        return;
+      }
+
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
       audioRef.current = audio;
@@ -239,23 +245,40 @@ export default function Home() {
         URL.revokeObjectURL(audioUrl);
       };
 
+      audio.onerror = () => {
+        console.warn("Audio playback error");
+        setPlayingMessageIdx(null);
+        setIsAudioPlaying(false);
+        setTtsLoading(null);
+        URL.revokeObjectURL(audioUrl);
+      };
+
       setPlayingMessageIdx(messageIdx);
       setIsAudioPlaying(true);
       setTtsLoading(null);
-      await audio.play();
+
+      // Play with user interaction awareness
+      try {
+        await audio.play();
+      } catch (playErr) {
+        // Autoplay blocked - this is normal on mobile without user interaction
+        console.warn("Audio play blocked (likely autoplay restriction):", playErr);
+        setPlayingMessageIdx(null);
+        setIsAudioPlaying(false);
+      }
     } catch (err) {
-      console.error("TTS playback error:", err);
+      console.warn("TTS playback error:", err);
       setTtsLoading(null);
       setIsAudioPlaying(false);
     }
-  }, [playingMessageIdx, selectedPersona]);
+  }, [playingMessageIdx]);
 
   // ─── Microphone Recording ───────────────────────────────────────────────────
 
   const sendChatMessageWithText = useCallback(async (text: string) => {
-    if (!text.trim() || !selectedPersona || isChatLoading || isRecording) return; // Block if recording
+    if (!text.trim() || !selectedPersona || isChatLoading || isRecording) return;
     const userMsg = text.trim();
-    setInputMode("text"); // Switch to text mode when sending text
+    setInputMode("text");
     setChatMessages(prev => [...prev, { role: "user", content: userMsg, timestamp: Date.now() }]);
     setIsChatLoading(true);
 
@@ -267,7 +290,6 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.success) {
-        // Update conversation stage from API response
         if (data.stage) {
           setConversationStage(data.stage);
         }
@@ -275,7 +297,7 @@ export default function Home() {
           const newMessages = [...prev, { role: "assistant", content: data.response, timestamp: Date.now() }];
           if (autoVoice) {
             const idx = newMessages.length - 1;
-            setTimeout(() => playTTS(data.response, idx), 100);
+            setTimeout(() => playTTS(data.response, idx), 200);
           }
           return newMessages;
         });
@@ -290,24 +312,21 @@ export default function Home() {
 
   // ─── Voice Activity Detection (VAD) ─────────────────────────────────────────
 
-  const SILENCE_THRESHOLD = 6; // RMS threshold for silence detection (0-128 range) — lowered for better sensitivity
-  const SILENCE_DURATION = 3500; // ms of silence before auto-stop — increased to prevent premature cut-off
-  const MIN_RECORDING_DURATION = 1200; // ms minimum recording before allowing stop
-  const MAX_RECORDING_DURATION = 120000; // ms maximum recording (120 seconds)
-  const SPEECH_DETECTION_INTERVAL = 150; // ms between VAD checks — slightly slower for stability
+  const SILENCE_THRESHOLD = 6;
+  const SILENCE_DURATION = 3500;
+  const MIN_RECORDING_DURATION = 1200;
+  const MAX_RECORDING_DURATION = 120000;
+  const SPEECH_DETECTION_INTERVAL = 150;
 
   const cleanupRecording = useCallback(() => {
-    // Stop VAD interval
     if (vadIntervalRef.current) {
       clearInterval(vadIntervalRef.current);
       vadIntervalRef.current = null;
     }
-    // Stop recording timer
     if (recordingTimerRef.current) {
       clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = null;
     }
-    // Close audio context
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       try { audioContextRef.current.close(); } catch { /* ignore */ }
     }
@@ -316,13 +335,12 @@ export default function Home() {
   }, []);
 
   const processRecordedAudio = useCallback(async () => {
-    if (isStoppingRef.current) return; // Prevent double-processing
+    if (isStoppingRef.current) return;
     isStoppingRef.current = true;
 
     const chunks = [...audioChunksRef.current];
     audioChunksRef.current = [];
 
-    // Release mic stream
     if (micStreamRef.current) {
       micStreamRef.current.getTracks().forEach(t => t.stop());
       micStreamRef.current = null;
@@ -330,7 +348,6 @@ export default function Home() {
 
     cleanupRecording();
 
-    // Check minimum duration
     const duration = Date.now() - recordingStartRef.current;
     if (duration < MIN_RECORDING_DURATION || chunks.length === 0) {
       setIsRecording(false);
@@ -345,7 +362,6 @@ export default function Home() {
     try {
       const audioBlob = new Blob(chunks, { type: "audio/webm" });
 
-      // Check blob size (too small = probably no speech)
       if (audioBlob.size < 1000) {
         isStoppingRef.current = false;
         return;
@@ -385,7 +401,7 @@ export default function Home() {
   const stopRecording = useCallback(() => {
     if (isStoppingRef.current) return;
     if (mediaRecorderRef.current?.state === "recording") {
-      mediaRecorderRef.current.stop(); // Triggers ondataavailable then onstop
+      mediaRecorderRef.current.stop();
     } else {
       setIsRecording(false);
       setRecordingDuration(0);
@@ -394,15 +410,10 @@ export default function Home() {
   }, [cleanupRecording]);
 
   const startRecording = useCallback(async () => {
-    // Don't start if TTS is playing (prevent echo/feedback)
     if (isAudioPlaying || playingMessageIdx !== null) return;
-    // Don't start if already recording
     if (isRecording || isStoppingRef.current) return;
-    // Don't start if chat is loading
     if (isChatLoading) return;
-    // Don't start if text input has content (prevent conflict)
     if (chatInput.trim()) return;
-    // Switch to voice input mode when recording
     setInputMode("voice");
 
     try {
@@ -415,7 +426,6 @@ export default function Home() {
       });
       micStreamRef.current = stream;
 
-      // Check supported MIME type
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
         : MediaRecorder.isTypeSupported("audio/webm")
@@ -428,7 +438,6 @@ export default function Home() {
       isStoppingRef.current = false;
       silenceStartRef.current = 0;
 
-      // Collect data with timeslice for reliability
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
@@ -441,11 +450,9 @@ export default function Home() {
       };
 
       mediaRecorder.onstop = () => {
-        // Process the recorded audio
         processRecordedAudio();
       };
 
-      // Set up Voice Activity Detection
       try {
         const audioCtx = new AudioContext();
         audioContextRef.current = audioCtx;
@@ -467,7 +474,6 @@ export default function Home() {
 
           analyserRef.current.getByteTimeDomainData(dataArray);
 
-          // Calculate RMS volume
           let sum = 0;
           for (let i = 0; i < dataArray.length; i++) {
             const val = (dataArray[i] - 128) / 128;
@@ -478,31 +484,25 @@ export default function Home() {
           const now = Date.now();
           const elapsed = now - recordingStartRef.current;
 
-          // Detect speech
           if (rms > SILENCE_THRESHOLD) {
             hasDetectedSpeech = true;
-            silenceStartRef.current = 0; // Reset silence timer
+            silenceStartRef.current = 0;
           } else if (hasDetectedSpeech && silenceStartRef.current === 0) {
-            // Speech was detected, now silence started
             silenceStartRef.current = now;
           }
 
-          // Auto-stop after prolonged silence (only after speech was detected)
           if (hasDetectedSpeech && silenceStartRef.current > 0 && (now - silenceStartRef.current) > SILENCE_DURATION) {
-            // Only auto-stop if minimum duration met
             if (elapsed > MIN_RECORDING_DURATION) {
               stopRecording();
             }
           }
 
-          // Force stop at max duration
           if (elapsed > MAX_RECORDING_DURATION) {
             stopRecording();
           }
         }, SPEECH_DETECTION_INTERVAL);
       } catch (vadErr) {
         console.warn("VAD setup failed, using timer-only mode:", vadErr);
-        // Fallback: just use a max duration timer
         setTimeout(() => {
           if (mediaRecorderRef.current?.state === "recording") {
             stopRecording();
@@ -510,13 +510,11 @@ export default function Home() {
         }, MAX_RECORDING_DURATION);
       }
 
-      // Start recording with timeslice for reliable data collection
-      mediaRecorder.start(250); // Collect data every 250ms
+      mediaRecorder.start(250);
       recordingStartRef.current = Date.now();
       setIsRecording(true);
       setRecordingDuration(0);
 
-      // Update recording duration timer
       recordingTimerRef.current = setInterval(() => {
         setRecordingDuration(Math.round((Date.now() - recordingStartRef.current) / 1000));
       }, 500);
@@ -595,9 +593,7 @@ export default function Home() {
       { role: "system", content: `You are now in a sales roleplay with ${persona.name}. Ask great questions to discover their pain points.`, timestamp: Date.now() },
       openingMsg,
     ]);
-    if (autoVoice) {
-      setTimeout(() => playTTS(persona.openingLine, 1), 300);
-    }
+    // Don't auto-play TTS on start - let user click the speaker button
     setTimeout(() => chatInputRef.current?.focus(), 300);
   };
 
@@ -612,22 +608,22 @@ export default function Home() {
     setSessionNotes("");
     setSessionStartTime(Date.now());
     setShowEndDialog(false);
-    setAutoVoice(true); // Auto-voice always on in voice mode
+    setAutoVoice(true);
     const sid = `voice-${persona.id}-${Date.now()}`;
     setChatSessionId(sid);
     setSessionId(sid);
     setConversationStage("guarded");
     const openingMsg = { role: "assistant" as const, content: persona.openingLine, timestamp: Date.now() };
     setChatMessages([
-      { role: "system", content: `Voice call with ${persona.name}. Speak naturally — ask great questions to discover their pain points. Your words are transcribed and the persona responds with voice.`, timestamp: Date.now() },
+      { role: "system", content: `Voice call with ${persona.name}. Tap the mic button to speak, or type your message.`, timestamp: Date.now() },
       openingMsg,
     ]);
-    // Auto-play TTS for opening line
-    setTimeout(() => playTTS(persona.openingLine, 1), 300);
+    // Don't auto-play TTS on start - warmup may not be complete
+    // User can click the speaker button on the opening message
   };
 
   const sendChatMessage = async () => {
-    if (!chatInput.trim() || !selectedPersona || isChatLoading || isRecording) return; // Block if recording
+    if (!chatInput.trim() || !selectedPersona || isChatLoading || isRecording) return;
     const userMsg = chatInput.trim();
     setChatInput("");
     await sendChatMessageWithText(userMsg);
@@ -635,18 +631,15 @@ export default function Home() {
   };
 
   const endRoleplay = async (outcome?: string) => {
-    // Stop any TTS playback
     audioRef.current?.pause();
     audioRef.current = null;
     setPlayingMessageIdx(null);
     setTtsLoading(null);
     setIsAudioPlaying(false);
 
-    // Stop recording if active
     if (isRecording) {
       stopRecording();
     }
-    // Cleanup recording resources
     cleanupRecording();
 
     if (sessionId) {
@@ -740,20 +733,12 @@ export default function Home() {
                   </button>
                 </div>
                 {authError && (
-                  <motion.p
-                    initial={{ opacity: 0, y: -5 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="text-sm text-red-400 flex items-center gap-1"
-                  >
+                  <motion.p initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-red-400 flex items-center gap-1">
                     <XCircle className="w-3.5 h-3.5" /> {authError}
                   </motion.p>
                 )}
               </div>
-              <Button
-                onClick={handleLogin}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white gap-2"
-                size="lg"
-              >
+              <Button onClick={handleLogin} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white gap-2" size="lg">
                 <Shield className="w-4 h-4" /> Access Arena
               </Button>
             </CardContent>
@@ -771,38 +756,38 @@ export default function Home() {
   // ─── RENDER: Dashboard ─────────────────────────────────────────────────────
 
   const renderDashboard = () => (
-    <div className="space-y-8">
+    <div className="space-y-6 md:space-y-8">
       {/* Hero */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
-        className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-8 md:p-12">
+        className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6 md:p-12">
         <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHZpZXdCb3g9IjAgMCA0MCA0MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxjaXJjbGUgY3g9IjIwIiBjeT0iMjAiIHI9IjEiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC4wNSkiLz48L2c+PC9zdmc+')] opacity-50" />
         <div className="relative z-10">
           <div className="flex items-center gap-4 mb-4">
-            <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={56} height={56} className="rounded-lg drop-shadow-lg" />
+            <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={48} height={48} className="rounded-lg drop-shadow-lg md:w-14 md:h-14" />
             <div className="flex flex-col">
               <Badge variant="secondary" className="bg-white/10 text-white hover:bg-white/20 border-white/20 w-fit mb-1">AI-Powered</Badge>
               <span className="text-white/60 text-xs tracking-widest uppercase">Sales Roleplay Arena</span>
             </div>
           </div>
-          <h1 className="text-3xl md:text-4xl font-bold text-white mb-3">SGC TECH <span className="text-white/60 font-normal">Roleplay Arena</span></h1>
-          <p className="text-slate-300 text-lg max-w-2xl mb-6">
-            Practice your sales pitch against AI-powered buyer personas. Choose text chat with voice playback or immersive voice calls powered by Deepgram.
+          <h1 className="text-2xl md:text-4xl font-bold text-white mb-3">SGC TECH <span className="text-white/60 font-normal">Roleplay Arena</span></h1>
+          <p className="text-slate-300 text-base md:text-lg max-w-2xl mb-6">
+            Practice your sales pitch against AI-powered buyer personas. Text chat with voice playback or immersive voice calls.
           </p>
           <div className="flex flex-wrap gap-3">
             <Button size="lg" onClick={() => setView("select")} className="bg-white text-slate-900 hover:bg-slate-100 gap-2">
               <Play className="w-5 h-5" /> Start Roleplay
             </Button>
             <Button size="lg" variant="outline" onClick={() => setView("history")} className="border-white/20 text-white hover:bg-white/10 gap-2">
-              <BarChart3 className="w-5 h-5" /> Session History
+              <BarChart3 className="w-5 h-5" /> History
             </Button>
           </div>
         </div>
       </motion.div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
         {[
-          { label: "Available Personas", value: PERSONAS.length, icon: Users, color: "text-slate-700" },
+          { label: "Personas", value: PERSONAS.length, icon: Users, color: "text-slate-700" },
           { label: "Sessions", value: sessions.length, icon: CheckCircle2, color: "text-emerald-600" },
           { label: "Wins", value: sessions.filter(s => s.outcome === "won").length, icon: Award, color: "text-amber-600" },
           { label: "Win Rate", value: sessions.filter(s => s.status === "completed").length > 0
@@ -811,10 +796,10 @@ export default function Home() {
         ].map((stat, i) => (
           <motion.div key={stat.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 * i, duration: 0.4 }}>
             <Card className="hover:shadow-md transition-shadow">
-              <CardContent className="p-4">
-                <stat.icon className={`w-5 h-5 ${stat.color} mb-2`} />
-                <div className="text-2xl font-bold">{stat.value}</div>
-                <div className="text-xs text-muted-foreground">{stat.label}</div>
+              <CardContent className="p-3 md:p-4">
+                <stat.icon className={`w-4 h-4 md:w-5 md:h-5 ${stat.color} mb-1.5`} />
+                <div className="text-xl md:text-2xl font-bold">{stat.value}</div>
+                <div className="text-[11px] md:text-xs text-muted-foreground">{stat.label}</div>
               </CardContent>
             </Card>
           </motion.div>
@@ -824,30 +809,29 @@ export default function Home() {
       {/* Quick Start */}
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">Quick Start</h2>
+          <h2 className="text-lg md:text-xl font-semibold">Quick Start</h2>
           <Button variant="ghost" size="sm" onClick={() => setView("select")} className="gap-1">View All <ChevronRight className="w-4 h-4" /></Button>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4">
           {PERSONAS.slice(0, 3).map((persona, i) => (
             <motion.div key={persona.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 * i, duration: 0.4 }}>
-              <Card className="cursor-pointer hover:shadow-lg transition-all hover:-translate-y-1 group" onClick={() => startTextRoleplay(persona)}>
-                <CardHeader className="pb-3">
+              <Card className="cursor-pointer hover:shadow-lg transition-all hover:-translate-y-0.5 group" onClick={() => startTextRoleplay(persona)}>
+                <CardHeader className="pb-2 md:pb-3">
                   <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <PersonaAvatar src={persona.avatar} alt={persona.name} size="lg" />
-                      <div>
-                        <CardTitle className="text-base group-hover:text-primary transition-colors">{persona.name}</CardTitle>
-                        <CardDescription className="text-xs">{persona.title}</CardDescription>
+                    <div className="flex items-center gap-2 md:gap-3">
+                      <PersonaAvatar src={persona.avatar} alt={persona.name} size="md" />
+                      <div className="min-w-0">
+                        <CardTitle className="text-sm md:text-base group-hover:text-primary transition-colors truncate">{persona.name}</CardTitle>
+                        <CardDescription className="text-[11px] md:text-xs truncate">{persona.title}</CardDescription>
                       </div>
                     </div>
-                    <div className="flex flex-col gap-1 items-end">
+                    <div className="flex flex-col gap-1 items-end shrink-0">
                       {getDiffBadge(persona.difficulty)}
-                      {getPersonaTypeBadge(persona.id)}
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent className="pb-3">
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
+                <CardContent className="pb-2 md:pb-3">
+                  <div className="flex items-center gap-2 text-[11px] md:text-xs text-muted-foreground mb-2">
                     <Building2 className="w-3 h-3" />{persona.company}
                   </div>
                   <div className="flex flex-wrap gap-1">
@@ -858,7 +842,7 @@ export default function Home() {
                 </CardContent>
                 <CardFooter className="pt-0">
                   <div className="w-full flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground italic line-clamp-1">&ldquo;{persona.openingLine}&rdquo;</span>
+                    <span className="text-[11px] md:text-xs text-muted-foreground italic line-clamp-1">&ldquo;{persona.openingLine}&rdquo;</span>
                     <ArrowRight className="w-4 h-4 text-muted-foreground group-hover:translate-x-1 transition-transform shrink-0" />
                   </div>
                 </CardFooter>
@@ -870,20 +854,20 @@ export default function Home() {
 
       {/* How It Works */}
       <div>
-        <h2 className="text-xl font-semibold mb-4">How It Works</h2>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <h2 className="text-lg md:text-xl font-semibold mb-4">How It Works</h2>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
           {[
-            { step: "1", title: "Choose Persona", desc: "Pick a buyer persona — decision-maker, gatekeeper, or influencer", icon: Users },
-            { step: "2", title: "Start Session", desc: "Text chat with voice playback or immersive voice call", icon: MessageCircle },
-            { step: "3", title: "Navigate Objections", desc: "Handle real objections and negotiation tactics", icon: Shield },
-            { step: "4", title: "Get Feedback", desc: "Rate your performance and track improvement", icon: TrendingUp },
+            { step: "1", title: "Choose", desc: "Pick a buyer persona", icon: Users },
+            { step: "2", title: "Start", desc: "Text chat or voice call", icon: MessageCircle },
+            { step: "3", title: "Navigate", desc: "Handle real objections", icon: Shield },
+            { step: "4", title: "Improve", desc: "Track your performance", icon: TrendingUp },
           ].map((item, i) => (
             <motion.div key={item.step} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 + 0.1 * i, duration: 0.4 }}>
-              <Card className="h-full"><CardContent className="p-4 text-center">
-                <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-3"><item.icon className="w-5 h-5 text-slate-700" /></div>
-                <div className="text-xs font-medium text-muted-foreground mb-1">Step {item.step}</div>
-                <div className="font-semibold text-sm mb-1">{item.title}</div>
-                <div className="text-xs text-muted-foreground">{item.desc}</div>
+              <Card className="h-full"><CardContent className="p-3 md:p-4 text-center">
+                <div className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-2 md:mb-3"><item.icon className="w-4 h-4 md:w-5 md:h-5 text-slate-700" /></div>
+                <div className="text-[10px] md:text-xs font-medium text-muted-foreground mb-0.5">Step {item.step}</div>
+                <div className="font-semibold text-xs md:text-sm mb-0.5">{item.title}</div>
+                <div className="text-[10px] md:text-xs text-muted-foreground">{item.desc}</div>
               </CardContent></Card>
             </motion.div>
           ))}
@@ -896,16 +880,15 @@ export default function Home() {
           <Card className="border-amber-200 bg-amber-50/50">
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2"><Sparkles className="w-5 h-5 text-amber-600" /><CardTitle className="text-base text-amber-800">Pro Tips</CardTitle></div>
+                <div className="flex items-center gap-2"><Sparkles className="w-4 h-4 md:w-5 md:h-5 text-amber-600" /><CardTitle className="text-sm md:text-base text-amber-800">Pro Tips</CardTitle></div>
                 <Button variant="ghost" size="sm" onClick={() => setShowTips(false)}><VolumeX className="w-4 h-4" /></Button>
               </div>
             </CardHeader>
             <CardContent className="pb-4">
-              <ul className="space-y-2 text-sm text-amber-800">
-                <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Listen carefully to the persona&apos;s tone and concerns before pitching</li>
-                <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Ask open-ended questions to uncover hidden pain points</li>
-                <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Use Voice Call mode for an immersive conversation experience</li>
-                <li className="flex items-start gap-2"><CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" /> Gatekeepers require a different approach — respect their role and be specific</li>
+              <ul className="space-y-1.5 md:space-y-2 text-xs md:text-sm text-amber-800">
+                <li className="flex items-start gap-2"><CheckCircle2 className="w-3.5 h-3.5 md:w-4 md:h-4 mt-0.5 shrink-0" /> Listen to the persona&apos;s tone before pitching</li>
+                <li className="flex items-start gap-2"><CheckCircle2 className="w-3.5 h-3.5 md:w-4 md:h-4 mt-0.5 shrink-0" /> Ask open-ended questions to uncover pain points</li>
+                <li className="flex items-start gap-2"><CheckCircle2 className="w-3.5 h-3.5 md:w-4 md:h-4 mt-0.5 shrink-0" /> Gatekeepers need a different approach — be specific</li>
               </ul>
             </CardContent>
           </Card>
@@ -923,82 +906,82 @@ export default function Home() {
     }
 
     return (
-      <div className="space-y-6">
+      <div className="space-y-4 md:space-y-6">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div>
-            <h2 className="text-2xl font-bold">Choose Your Persona</h2>
-            <p className="text-muted-foreground">Select a buyer persona to practice with</p>
+            <h2 className="text-xl md:text-2xl font-bold">Choose Your Persona</h2>
+            <p className="text-xs md:text-sm text-muted-foreground">Select a buyer persona to practice with</p>
           </div>
-          <Button variant="ghost" onClick={() => setView("dashboard")}>Back to Dashboard</Button>
+          <Button variant="ghost" onClick={() => setView("dashboard")}>Back</Button>
         </div>
 
-        <div className="flex flex-col gap-3">
-          <div className="flex gap-2 flex-wrap">
-            <span className="text-xs font-medium text-muted-foreground self-center mr-1">Difficulty:</span>
+        <div className="flex flex-col gap-2 md:gap-3">
+          <div className="flex gap-1.5 md:gap-2 flex-wrap">
+            <span className="text-[10px] md:text-xs font-medium text-muted-foreground self-center mr-1">Difficulty:</span>
             {["all", "easy", "medium", "hard"].map(diff => (
-              <Button key={diff} variant={difficultyFilter === diff ? "default" : "outline"} size="sm" onClick={() => setDifficultyFilter(diff)} className="gap-1">
+              <Button key={diff} variant={difficultyFilter === diff ? "default" : "outline"} size="sm" onClick={() => setDifficultyFilter(diff)} className="gap-1 text-xs">
                 {diff === "all" ? "All" : DIFFICULTY_CONFIG[diff as "easy" | "medium" | "hard"].label}
-                {diff !== "all" && <span className="ml-1 text-xs opacity-70">({PERSONAS.filter(p => p.difficulty === diff).length})</span>}
+                {diff !== "all" && <span className="ml-1 text-[10px] opacity-70">({PERSONAS.filter(p => p.difficulty === diff).length})</span>}
               </Button>
             ))}
           </div>
-          <div className="flex gap-2 flex-wrap">
-            <span className="text-xs font-medium text-muted-foreground self-center mr-1">Type:</span>
+          <div className="flex gap-1.5 md:gap-2 flex-wrap">
+            <span className="text-[10px] md:text-xs font-medium text-muted-foreground self-center mr-1">Type:</span>
             {["all", "decision-maker", "gatekeeper", "influencer"].map(type => (
-              <Button key={type} variant={typeFilter === type ? "default" : "outline"} size="sm" onClick={() => setTypeFilter(type)} className="gap-1">
+              <Button key={type} variant={typeFilter === type ? "default" : "outline"} size="sm" onClick={() => setTypeFilter(type)} className="gap-1 text-xs">
                 {type === "all" ? "All Types" : `${PERSONA_TYPE_CONFIG[type as keyof typeof PERSONA_TYPE_CONFIG].icon} ${PERSONA_TYPE_CONFIG[type as keyof typeof PERSONA_TYPE_CONFIG].label}`}
               </Button>
             ))}
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
           <AnimatePresence>
             {filtered.map((persona, i) => (
-              <motion.div key={persona.id} initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} transition={{ delay: 0.05 * i, duration: 0.3 }}>
+              <motion.div key={persona.id} initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} transition={{ delay: 0.03 * i, duration: 0.3 }}>
                 <Card className="h-full hover:shadow-lg transition-all group">
-                  <CardHeader className="pb-3">
+                  <CardHeader className="pb-2 md:pb-3">
                     <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-3">
-                        <PersonaAvatar src={persona.avatar} alt={persona.name} size="lg" />
-                        <div>
-                          <CardTitle className="text-base group-hover:text-primary transition-colors">{persona.name}</CardTitle>
-                          <CardDescription className="text-xs">{persona.title}</CardDescription>
+                      <div className="flex items-center gap-2 md:gap-3">
+                        <PersonaAvatar src={persona.avatar} alt={persona.name} size="md" />
+                        <div className="min-w-0">
+                          <CardTitle className="text-sm md:text-base group-hover:text-primary transition-colors truncate">{persona.name}</CardTitle>
+                          <CardDescription className="text-[11px] md:text-xs truncate">{persona.title}</CardDescription>
                         </div>
                       </div>
-                      <div className="flex flex-col gap-1 items-end">
+                      <div className="flex flex-col gap-1 items-end shrink-0">
                         {getDiffBadge(persona.difficulty)}
                         {getPersonaTypeBadge(persona.id)}
                       </div>
                     </div>
                   </CardHeader>
-                  <CardContent className="pb-3 space-y-3">
-                    <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                  <CardContent className="pb-2 md:pb-3 space-y-2 md:space-y-3">
+                    <div className="flex items-center gap-3 md:gap-4 text-[11px] md:text-xs text-muted-foreground">
                       <span className="flex items-center gap-1"><Building2 className="w-3 h-3" />{persona.company}</span>
                       <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{persona.location}</span>
                     </div>
-                    <p className="text-xs text-muted-foreground line-clamp-2">{persona.personality}</p>
+                    <p className="text-[11px] md:text-xs text-muted-foreground line-clamp-2">{persona.personality}</p>
                     <div className="flex flex-wrap gap-1">{persona.tags.slice(0, 3).map(tag => <Badge key={tag} variant="secondary" className="text-[10px] px-1.5 py-0">{tag}</Badge>)}</div>
                     <Separator />
                     <div>
-                      <div className="text-xs font-medium mb-1.5 flex items-center gap-1"><AlertTriangle className="w-3 h-3 text-amber-500" /> Key Objections</div>
-                      <ul className="space-y-1">{persona.objections.slice(0, 2).map((obj, idx) => (
-                        <li key={idx} className="text-xs text-muted-foreground line-clamp-1 flex items-start gap-1"><XCircle className="w-3 h-3 mt-0.5 shrink-0 text-red-400" />{obj}</li>
+                      <div className="text-[10px] md:text-xs font-medium mb-1 flex items-center gap-1"><AlertTriangle className="w-3 h-3 text-amber-500" /> Key Objections</div>
+                      <ul className="space-y-0.5 md:space-y-1">{persona.objections.slice(0, 2).map((obj, idx) => (
+                        <li key={idx} className="text-[10px] md:text-xs text-muted-foreground line-clamp-1 flex items-start gap-1"><XCircle className="w-3 h-3 mt-0.5 shrink-0 text-red-400" />{obj}</li>
                       ))}</ul>
                     </div>
                     <div>
-                      <div className="text-xs font-medium mb-1.5 flex items-center gap-1"><Target className="w-3 h-3 text-emerald-500" /> How to Win</div>
-                      <ul className="space-y-1">{persona.winConditions.slice(0, 2).map((cond, idx) => (
-                        <li key={idx} className="text-xs text-muted-foreground line-clamp-1 flex items-start gap-1"><CheckCircle2 className="w-3 h-3 mt-0.5 shrink-0 text-emerald-400" />{cond}</li>
+                      <div className="text-[10px] md:text-xs font-medium mb-1 flex items-center gap-1"><Target className="w-3 h-3 text-emerald-500" /> How to Win</div>
+                      <ul className="space-y-0.5 md:space-y-1">{persona.winConditions.slice(0, 2).map((cond, idx) => (
+                        <li key={idx} className="text-[10px] md:text-xs text-muted-foreground line-clamp-1 flex items-start gap-1"><CheckCircle2 className="w-3 h-3 mt-0.5 shrink-0 text-emerald-400" />{cond}</li>
                       ))}</ul>
                     </div>
                   </CardContent>
                   <CardFooter className="pt-0 gap-2">
-                    <Button size="sm" className="flex-1 gap-1" onClick={() => startTextRoleplay(persona)}>
+                    <Button size="sm" className="flex-1 gap-1 text-xs" onClick={() => startTextRoleplay(persona)}>
                       <MessageCircle className="w-3 h-3" /> Chat
                     </Button>
-                    <Button size="sm" variant="outline" className="flex-1 gap-1" onClick={() => startVoiceRoleplay(persona)}>
-                      <Phone className="w-3 h-3" /> Voice Call
+                    <Button size="sm" variant="outline" className="flex-1 gap-1 text-xs" onClick={() => startVoiceRoleplay(persona)}>
+                      <Phone className="w-3 h-3" /> Voice
                     </Button>
                   </CardFooter>
                 </Card>
@@ -1010,24 +993,23 @@ export default function Home() {
         {filtered.length === 0 && (
           <Card><CardContent className="py-8 text-center">
             <Users className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
-            <p className="text-sm text-muted-foreground">No personas match your filters. Try adjusting the difficulty or type filters.</p>
+            <p className="text-sm text-muted-foreground">No personas match your filters.</p>
           </CardContent></Card>
         )}
       </div>
     );
   };
 
-  // ─── RENDER: Chat Area (shared by both text and voice modes) ────────────────
+  // ─── RENDER: Chat Area ────────────────────────────────────────────────────
 
   const renderChatArea = () => {
-    // Determine effective input mode - on mobile voice mode, always voice
     const effectiveInputMode = isMobile && mode === "voice" ? "voice" : inputMode;
 
     return (
-      <div className="space-y-3 flex flex-col h-[calc(100dvh-140px)] md:h-auto">
-        {/* Voice/Call Status Indicator - shown when in voice input mode or voice call mode */}
+      <div className="flex flex-col" style={{ height: isMobile ? 'calc(100dvh - 130px)' : 'auto', minHeight: isMobile ? '400px' : '500px' }}>
+        {/* Voice/Call Status Indicator */}
         {(mode === "voice" || effectiveInputMode === "voice") && (
-          <div className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg border transition-colors ${
+          <div className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg border mb-2 transition-colors shrink-0 ${
             isRecording
               ? "bg-red-50 border-red-300"
               : isAudioPlaying
@@ -1051,38 +1033,23 @@ export default function Home() {
                 <span className="text-xs font-medium text-emerald-700">
                   {selectedPersona?.name} is speaking...
                 </span>
-                <div className="flex gap-0.5 items-end">
-                  {[1, 2, 3, 4].map(bar => (
-                    <motion.div
-                      key={bar}
-                      animate={{ height: [4, 12 + Math.random() * 8, 4] }}
-                      transition={{ duration: 0.5 + Math.random() * 0.3, repeat: Infinity, delay: bar * 0.1 }}
-                      className="w-1 bg-emerald-500 rounded-full"
-                      style={{ height: 4 }}
-                    />
-                  ))}
-                </div>
               </>
             ) : isChatLoading ? (
               <>
                 <RefreshCw className="w-4 h-4 text-slate-400 animate-spin" />
-                <span className="text-xs font-medium text-slate-500">
-                  {selectedPersona?.name} is thinking...
-                </span>
+                <span className="text-xs font-medium text-slate-500">Thinking...</span>
               </>
             ) : (
               <>
                 <Mic className="w-4 h-4 text-slate-500" />
-                <span className="text-xs font-medium text-slate-600">
-                  Tap the mic button to speak
-                </span>
+                <span className="text-xs font-medium text-slate-600">Tap mic to speak</span>
               </>
             )}
           </div>
         )}
 
         {/* Chat Messages */}
-        <ScrollArea className="flex-1 rounded-lg border bg-white p-3 sm:p-4 min-h-[300px] max-h-[calc(100dvh-280px)] md:min-h-[400px] md:max-h-[calc(100vh-360px)]">
+        <div className="flex-1 overflow-y-auto rounded-lg border bg-white p-3 mb-2" style={{ minHeight: '200px' }}>
           <div className="space-y-3">
             {chatMessages.map((msg, i) => (
               <motion.div
@@ -1093,29 +1060,29 @@ export default function Home() {
                 className={`flex ${msg.role === "user" ? "justify-end" : msg.role === "system" ? "justify-center" : "justify-start"}`}
               >
                 {msg.role === "system" ? (
-                  <div className="text-xs text-muted-foreground bg-muted px-3 py-1 rounded-full">{msg.content}</div>
+                  <div className="text-xs text-muted-foreground bg-muted px-3 py-1.5 rounded-full max-w-[90%]">{msg.content}</div>
                 ) : (
-                  <div className={`max-w-[85%] sm:max-w-[80%] ${msg.role === "user" ? "order-1" : ""}`}>
-                    <div className="flex items-center gap-2 mb-1">
+                  <div className={`max-w-[85%] ${msg.role === "user" ? "" : ""}`}>
+                    <div className="flex items-center gap-1.5 mb-1">
                       {msg.role === "assistant" && (
-                        <div className="flex items-center gap-1.5">
+                        <>
                           <PersonaAvatar src={selectedPersona?.avatar || "/avatars/p1_faisal.png"} alt={selectedPersona?.name || "Persona"} size="sm" />
-                          <span className="text-xs font-medium text-muted-foreground">{selectedPersona?.name}</span>
-                        </div>
+                          <span className="text-[11px] font-medium text-muted-foreground">{selectedPersona?.name}</span>
+                        </>
                       )}
                       {msg.role === "user" && (
-                        <div className="flex items-center gap-1.5 justify-end w-full">
-                          <span className="text-xs font-medium text-muted-foreground">You</span>
+                        <div className="flex items-center gap-1.5 ml-auto">
+                          <span className="text-[11px] font-medium text-muted-foreground">You</span>
                           <div className="w-6 h-6 rounded-full bg-slate-700 flex items-center justify-center text-sm text-white">🎤</div>
                         </div>
                       )}
                     </div>
                     {msg.role === "assistant" ? (
-                      <div className="rounded-2xl px-3 sm:px-4 py-2.5 text-sm whitespace-pre-wrap bg-slate-100 text-slate-900 rounded-bl-md relative group">
+                      <div className="rounded-2xl px-3 py-2.5 text-sm whitespace-pre-wrap bg-slate-100 text-slate-900 rounded-bl-md relative group">
                         {msg.content}
                         <button
                           onClick={() => playTTS(msg.content, i)}
-                          className="absolute -top-1 -right-1 w-7 h-7 rounded-full bg-white shadow-md flex items-center justify-center sm:opacity-0 sm:group-hover:opacity-100 transition-opacity hover:bg-slate-50 active:bg-slate-100"
+                          className="absolute -top-1 -right-1 w-7 h-7 rounded-full bg-white shadow-md flex items-center justify-center hover:bg-slate-50 active:bg-slate-100 transition-colors"
                           title={playingMessageIdx === i ? "Stop voice" : "Play voice"}
                         >
                           {ttsLoading === i ? (
@@ -1128,7 +1095,7 @@ export default function Home() {
                         </button>
                       </div>
                     ) : (
-                      <div className="rounded-2xl px-3 sm:px-4 py-2.5 text-sm whitespace-pre-wrap bg-primary text-primary-foreground rounded-br-md">
+                      <div className="rounded-2xl px-3 py-2.5 text-sm whitespace-pre-wrap bg-primary text-primary-foreground rounded-br-md">
                         {msg.content}
                       </div>
                     )}
@@ -1152,17 +1119,17 @@ export default function Home() {
             )}
             <div ref={chatEndRef} />
           </div>
-        </ScrollArea>
+        </div>
 
-        {/* ── Input Mode Toggle (mobile only) ── */}
+        {/* Input Mode Toggle (mobile) */}
         {isMobile && roleplayStatus === "active" && (
-          <div className="flex md:hidden items-center justify-center gap-1 p-1 bg-slate-100 rounded-lg">
+          <div className="flex items-center justify-center gap-1 p-1 bg-slate-100 rounded-lg mb-2 shrink-0">
             <button
               onClick={() => { setInputMode("text"); if (isRecording) stopRecording(); }}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                 effectiveInputMode === "text"
                   ? "bg-white shadow-sm text-slate-900"
-                  : "text-slate-500 hover:text-slate-700"
+                  : "text-slate-500"
               }`}
             >
               <Keyboard className="w-3.5 h-3.5" /> Type
@@ -1172,7 +1139,7 @@ export default function Home() {
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                 effectiveInputMode === "voice"
                   ? "bg-white shadow-sm text-slate-900"
-                  : "text-slate-500 hover:text-slate-700"
+                  : "text-slate-500"
               }`}
             >
               <Mic className="w-3.5 h-3.5" /> Voice
@@ -1180,15 +1147,14 @@ export default function Home() {
           </div>
         )}
 
-        {/* ── Chat Input Bar ── */}
-        <div className="flex gap-2 items-center">
-          {/* Mic button - always visible, but size varies by mode */}
+        {/* Chat Input Bar */}
+        <div className="flex gap-2 items-center shrink-0">
           <Button
             variant={isRecording ? "destructive" : effectiveInputMode === "voice" ? "default" : "outline"}
             size={effectiveInputMode === "voice" ? "default" : "icon"}
             onClick={isRecording ? stopRecording : startRecording}
             disabled={!isRecording && (isAudioPlaying || playingMessageIdx !== null || isChatLoading || effectiveInputMode === "text")}
-            className={`shrink-0 relative ${effectiveInputMode === "voice" ? "w-12 h-12" : "w-9 h-9"}`}
+            className={`shrink-0 relative ${effectiveInputMode === "voice" ? "w-11 h-11" : "w-9 h-9"}`}
           >
             {isRecording ? (
               <>
@@ -1206,18 +1172,13 @@ export default function Home() {
             )}
           </Button>
 
-          {/* Text Input - hidden in voice input mode on mobile */}
           <div className={`flex-1 relative ${isMobile && effectiveInputMode === "voice" ? "hidden" : ""}`}>
             <Input
               ref={chatInputRef}
               value={chatInput}
               onChange={e => setChatInput(e.target.value)}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }}
-              placeholder={
-                isRecording
-                  ? "Listening..."
-                  : "Type your message..."
-              }
+              placeholder={isRecording ? "Listening..." : "Type your message..."}
               disabled={isChatLoading || isRecording || effectiveInputMode === "voice"}
               className="pr-10 h-10"
               autoComplete="off"
@@ -1232,16 +1193,10 @@ export default function Home() {
             </Button>
           </div>
 
-          {/* Voice mode: show spacer on mobile */}
           {isMobile && effectiveInputMode === "voice" && (
             <div className="flex-1 flex items-center justify-center">
               <span className="text-xs text-muted-foreground">
-                {isRecording
-                  ? `Recording · ${recordingDuration}s`
-                  : isAudioPlaying
-                    ? "Listening..."
-                    : "Tap mic to speak"
-                }
+                {isRecording ? `Recording · ${recordingDuration}s` : isAudioPlaying ? "Listening..." : "Tap mic to speak"}
               </span>
             </div>
           )}
@@ -1261,9 +1216,8 @@ export default function Home() {
     );
   };
 
-  // ─── RENDER: Roleplay Session ───────────────────────────────────────────────
+  // ─── Sidebar content ──────────────────────────────────────────────────────
 
-  // ─── Sidebar content (shared between desktop & mobile sheet) ─────────────────
   const renderSidebarContent = () => (
     <div className="space-y-3">
       <Card>
@@ -1271,11 +1225,9 @@ export default function Home() {
         <CardContent className="space-y-3">
           <div className="text-center">
             <PersonaAvatar src={selectedPersona?.avatar || "/avatars/p1_faisal.png"} alt={selectedPersona?.name || "Persona"} size="md" />
-            <div className="font-semibold">{selectedPersona?.name}</div>
+            <div className="font-semibold text-sm">{selectedPersona?.name}</div>
             <div className="text-xs text-muted-foreground">{selectedPersona?.nationality} · Age {selectedPersona?.age}</div>
-            {selectedPersona && (
-              <div className="mt-2">{getPersonaTypeBadge(selectedPersona.id)}</div>
-            )}
+            {selectedPersona && <div className="mt-2">{getPersonaTypeBadge(selectedPersona.id)}</div>}
           </div>
           <Separator />
           <div>
@@ -1310,20 +1262,14 @@ export default function Home() {
                   }`}
                 >
                   <s.icon className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${
-                    isActive ? "text-sky-500" :
-                    isComplete ? "text-emerald-500" :
-                    "text-slate-400"
+                    isActive ? "text-sky-500" : isComplete ? "text-emerald-500" : "text-slate-400"
                   }`} />
                   <div>
                     <div className={`font-medium ${
-                      isActive ? "text-sky-700" :
-                      isComplete ? "text-emerald-700 line-through" :
-                      "text-slate-500"
+                      isActive ? "text-sky-700" : isComplete ? "text-emerald-700 line-through" : "text-slate-500"
                     }`}>{s.label}</div>
                     <div className={`${
-                      isActive ? "text-sky-600" :
-                      isComplete ? "text-emerald-600" :
-                      "text-slate-400"
+                      isActive ? "text-sky-600" : isComplete ? "text-emerald-600" : "text-slate-400"
                     }`}>{s.desc}</div>
                   </div>
                   {isComplete && <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0 ml-auto" />}
@@ -1338,7 +1284,7 @@ export default function Home() {
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-1"><Shield className="w-4 h-4 text-amber-500" /> Objections</CardTitle></CardHeader>
         <CardContent>
-          <ScrollArea className="max-h-32">
+          <div className="max-h-32 overflow-y-auto">
             <ul className="space-y-1.5">
               {selectedPersona?.objections.map((obj, i) => (
                 <li key={i} className="text-xs flex items-start gap-2 p-1.5 rounded bg-amber-50">
@@ -1346,14 +1292,14 @@ export default function Home() {
                 </li>
               ))}
             </ul>
-          </ScrollArea>
+          </div>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-1"><Target className="w-4 h-4 text-emerald-500" /> How to Win</CardTitle></CardHeader>
         <CardContent>
-          <ScrollArea className="max-h-32">
+          <div className="max-h-32 overflow-y-auto">
             <ul className="space-y-1.5">
               {selectedPersona?.winConditions.map((cond, i) => (
                 <li key={i} className="text-xs flex items-start gap-2 p-1.5 rounded bg-emerald-50">
@@ -1361,14 +1307,14 @@ export default function Home() {
                 </li>
               ))}
             </ul>
-          </ScrollArea>
+          </div>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-1"><XCircle className="w-4 h-4 text-red-500" /> How to Lose</CardTitle></CardHeader>
         <CardContent>
-          <ScrollArea className="max-h-32">
+          <div className="max-h-32 overflow-y-auto">
             <ul className="space-y-1.5">
               {selectedPersona?.loseConditions.map((cond, i) => (
                 <li key={i} className="text-xs flex items-start gap-2 p-1.5 rounded bg-red-50">
@@ -1376,53 +1322,48 @@ export default function Home() {
                 </li>
               ))}
             </ul>
-          </ScrollArea>
+          </div>
         </CardContent>
       </Card>
     </div>
   );
 
+  // ─── RENDER: Roleplay Session ───────────────────────────────────────────────
+
   const renderRoleplay = () => (
-    <div className="space-y-2 lg:space-y-6">
-      {/* Header - compact on mobile */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 lg:gap-3">
+    <div className="space-y-2 lg:space-y-4">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={() => {
             if (roleplayStatus === "active") {
               if (confirm("End the current session?")) handleEndSession();
             }
             setView("dashboard"); setRoleplayStatus("idle");
-          }} className="shrink-0">
+          }} className="shrink-0 px-2">
             <span className="lg:hidden">←</span><span className="hidden lg:inline">Back</span>
           </Button>
           {selectedPersona && (
             <div className="flex items-center gap-2 min-w-0">
               <PersonaAvatar src={selectedPersona.avatar} alt={selectedPersona.name} size="sm" />
               <div className="min-w-0">
-                <div className="font-semibold truncate text-sm lg:text-base">{selectedPersona.name}</div>
-                <div className="text-xs text-muted-foreground hidden sm:block">{selectedPersona.title} · {selectedPersona.company}</div>
+                <div className="font-semibold truncate text-sm">{selectedPersona.name}</div>
+                <div className="text-[11px] text-muted-foreground hidden sm:block truncate">{selectedPersona.title} · {selectedPersona.company}</div>
               </div>
-            </div>
-          )}
-          {!isMobile && (
-            <div className="hidden xl:flex items-center gap-1.5 ml-2 px-2 py-1 rounded-md bg-slate-50 border border-slate-200">
-              <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={16} height={16} className="rounded-sm" />
-              <span className="text-[10px] font-semibold text-slate-500 tracking-wide">SGC TECH</span>
             </div>
           )}
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
           {getDiffBadge(selectedPersona?.difficulty || "medium")}
-          {selectedPersona && getPersonaTypeBadge(selectedPersona.id)}
-          <Badge variant={mode === "text" ? "default" : "outline"} className="gap-1">
+          <Badge variant={mode === "text" ? "default" : "outline"} className="gap-1 text-[11px]">
             {mode === "text" ? <><Type className="w-3 h-3" /> Chat</> : <><Phone className="w-3 h-3" /> Voice</>}
           </Badge>
           {roleplayStatus === "active" && (
-            <div className="flex items-center gap-1 text-sm font-mono text-muted-foreground">
-              <Clock className="w-3.5 h-3.5" />{formatTime(callTimer)}
+            <div className="flex items-center gap-1 text-xs font-mono text-muted-foreground">
+              <Clock className="w-3 h-3" />{formatTime(callTimer)}
             </div>
           )}
-          {/* Conversation Stage Indicator */}
+          {/* Conversation Stage */}
           {roleplayStatus === "active" && (() => {
             const stageConfig: Record<string, { label: string; color: string; icon: typeof Target }> = {
               guarded: { label: "Guarded", color: "bg-slate-100 text-slate-600 border-slate-200", icon: Shield },
@@ -1433,22 +1374,16 @@ export default function Home() {
             const cfg = stageConfig[conversationStage] || stageConfig.guarded;
             return (
               <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border ${cfg.color}`}>
-                <cfg.icon className="w-2.5 h-2.5" />
-                {cfg.label}
+                <cfg.icon className="w-2.5 h-2.5" />{cfg.label}
               </span>
             );
           })()}
-          {/* Auto-Voice Toggle - only show in text chat mode, desktop only */}
+          {/* Auto-Voice Toggle - text mode, desktop only */}
           {mode === "text" && roleplayStatus === "active" && !isMobile && (
             <div className="flex items-center gap-2">
               <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
-                <Volume2 className="w-3.5 h-3.5" />
-                Auto-Voice
-                <Switch
-                  checked={autoVoice}
-                  onCheckedChange={setAutoVoice}
-                  className="scale-75"
-                />
+                <Volume2 className="w-3.5 h-3.5" /> Auto-Voice
+                <Switch checked={autoVoice} onCheckedChange={setAutoVoice} className="scale-75" />
               </label>
             </div>
           )}
@@ -1461,7 +1396,7 @@ export default function Home() {
                   <span className="text-[10px]">Info</span>
                 </Button>
               </SheetTrigger>
-              <SheetContent side="right" className="w-[300px] overflow-y-auto p-4">
+              <SheetContent side="right" className="w-[280px] overflow-y-auto p-4">
                 <SheetHeader className="p-0 pb-2">
                   <SheetTitle className="text-sm">Session Info</SheetTitle>
                 </SheetHeader>
@@ -1477,8 +1412,6 @@ export default function Home() {
         <div className="lg:col-span-2">
           {renderChatArea()}
         </div>
-
-        {/* Sidebar: Desktop only - always rendered, hidden on mobile via CSS */}
         <div className="hidden lg:block">
           <div className="space-y-4">
             {renderSidebarContent()}
@@ -1534,39 +1467,38 @@ export default function Home() {
               <label className="text-sm font-medium mb-2 block">Outcome</label>
               <div className="grid grid-cols-3 gap-2">
                 {([
-                  { key: "won" as const, label: "Won", icon: CheckCircle2, color: "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100", activeColor: "border-emerald-500 bg-emerald-100 text-emerald-800 ring-2 ring-emerald-500" },
-                  { key: "partial" as const, label: "Partial", icon: Pause, color: "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100", activeColor: "border-amber-500 bg-amber-100 text-amber-800 ring-2 ring-amber-500" },
-                  { key: "lost" as const, label: "Lost", icon: XCircle, color: "border-red-200 bg-red-50 text-red-700 hover:bg-red-100", activeColor: "border-red-500 bg-red-100 text-red-800 ring-2 ring-red-500" },
-                ]).map(outcome => (
+                  { key: "won" as const, label: "Won", icon: CheckCircle2, activeColor: "border-emerald-500 bg-emerald-100 text-emerald-800 ring-2 ring-emerald-500" },
+                  { key: "partial" as const, label: "Partial", icon: Pause, activeColor: "border-amber-500 bg-amber-100 text-amber-800 ring-2 ring-amber-500" },
+                  { key: "lost" as const, label: "Lost", icon: XCircle, activeColor: "border-red-500 bg-red-100 text-red-800 ring-2 ring-red-500" },
+                ]).map(({ key, label, icon: Icon, activeColor }) => (
                   <button
-                    key={outcome.key}
-                    onClick={() => setEndOutcome(outcome.key)}
-                    className={`flex flex-col items-center gap-1 p-3 rounded-lg border-2 transition-all cursor-pointer ${
-                      endOutcome === outcome.key ? outcome.activeColor : outcome.color
+                    key={key}
+                    onClick={() => setEndOutcome(key)}
+                    className={`flex flex-col items-center gap-1 p-3 rounded-lg border-2 transition-all ${
+                      endOutcome === key ? activeColor : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                     }`}
                   >
-                    <outcome.icon className="w-5 h-5" />
-                    <span className="text-xs font-medium">{outcome.label}</span>
+                    <Icon className="w-5 h-5" />
+                    <span className="text-xs font-medium">{label}</span>
                   </button>
                 ))}
               </div>
             </div>
 
             <div>
-              <label className="text-sm font-medium mb-2 block">Notes (optional)</label>
+              <label className="text-sm font-medium mb-2 block">Notes</label>
               <Textarea
-                placeholder="What went well? What could you improve?"
                 value={endNotes}
                 onChange={e => setEndNotes(e.target.value)}
+                placeholder="What went well? What could you improve?"
                 rows={3}
               />
             </div>
           </div>
-          <DialogFooter className="gap-2 sm:gap-0">
+          <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => setShowEndDialog(false)}>Cancel</Button>
-            <Button onClick={handleSaveEndSession} className="gap-2">
-              <CheckCircle2 className="w-4 h-4" />
-              Save & Return
+            <Button onClick={handleSaveEndSession} className="gap-1">
+              <CheckCircle2 className="w-4 h-4" /> Save & Close
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1574,131 +1506,117 @@ export default function Home() {
     );
   };
 
-  // ─── RENDER: Session History ────────────────────────────────────────────────
+  // ─── RENDER: History ────────────────────────────────────────────────────────
 
   const renderHistory = () => (
-    <div className="space-y-6">
+    <div className="space-y-4 md:space-y-6">
       <div className="flex items-center justify-between">
-        <div><h2 className="text-2xl font-bold">Session History</h2><p className="text-muted-foreground">Track your roleplay performance</p></div>
-        <Button variant="ghost" onClick={() => setView("dashboard")}>Back to Dashboard</Button>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {[
-          { label: "Total Sessions", value: sessions.length, icon: BarChart3 },
-          { label: "Wins", value: sessions.filter(s => s.outcome === "won").length, icon: Award },
-          { label: "Avg Duration", value: sessions.length > 0 ? formatTime(Math.round(sessions.reduce((a, s) => a + (s.duration || 0), 0) / sessions.length)) : "00:00", icon: Clock },
-          { label: "Win Rate", value: sessions.filter(s => s.status === "completed").length > 0 ? `${Math.round(sessions.filter(s => s.outcome === "won").length / sessions.filter(s => s.status === "completed").length * 100)}%` : "0%", icon: TrendingUp },
-        ].map(stat => (
-          <Card key={stat.label}><CardContent className="p-4">
-            <stat.icon className="w-5 h-5 text-muted-foreground mb-2" />
-            <div className="text-2xl font-bold">{stat.value}</div>
-            <div className="text-xs text-muted-foreground">{stat.label}</div>
-          </CardContent></Card>
-        ))}
+        <div>
+          <h2 className="text-xl md:text-2xl font-bold">Session History</h2>
+          <p className="text-xs md:text-sm text-muted-foreground">Your past roleplay sessions</p>
+        </div>
+        <Button variant="ghost" onClick={() => setView("dashboard")}>Back</Button>
       </div>
       {sessions.length === 0 ? (
-        <Card><CardContent className="py-12 text-center">
-          <BookOpen className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
-          <h3 className="font-semibold text-lg mb-1">No sessions yet</h3>
-          <p className="text-sm text-muted-foreground mb-4">Start your first roleplay session</p>
-          <Button onClick={() => setView("select")} className="gap-2"><Play className="w-4 h-4" /> Start Roleplay</Button>
-        </CardContent></Card>
+        <Card>
+          <CardContent className="py-12 text-center">
+            <BarChart3 className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+            <h3 className="font-semibold mb-1">No sessions yet</h3>
+            <p className="text-sm text-muted-foreground mb-4">Start your first roleplay session to see history here.</p>
+            <Button onClick={() => setView("select")} className="gap-2"><Play className="w-4 h-4" /> Start Roleplay</Button>
+          </CardContent>
+        </Card>
       ) : (
-        <div className="space-y-3">{sessions.map(session => {
-          const persona = PERSONAS.find(p => p.id === session.personaId);
-          return (
-            <Card key={session.id}><CardContent className="p-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                {persona && <PersonaAvatar src={persona.avatar} alt={persona.name} size="md" />}
-                <div>
-                  <div className="font-medium text-sm">{persona?.name || session.personaId}</div>
-                  <div className="text-xs text-muted-foreground">{new Date(session.createdAt).toLocaleDateString()} · {formatTime(session.duration || 0)}</div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                {persona && getPersonaTypeBadge(persona.id)}
-                {session.outcome === "won" && <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200">Won</Badge>}
-                {session.outcome === "lost" && <Badge className="bg-red-100 text-red-700 border-red-200">Lost</Badge>}
-                {session.outcome === "partial" && <Badge className="bg-amber-100 text-amber-700 border-amber-200">Partial</Badge>}
-                {!session.outcome && <Badge variant="secondary">{session.status}</Badge>}
-              </div>
-            </CardContent></Card>
-          );
-        })}</div>
+        <div className="space-y-3">
+          {sessions.map((session, i) => (
+            <motion.div key={session.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 * i }}>
+              <Card>
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                        session.outcome === "won" ? "bg-emerald-100" :
+                        session.outcome === "lost" ? "bg-red-100" : "bg-amber-100"
+                      }`}>
+                        {session.outcome === "won" ? <CheckCircle2 className="w-5 h-5 text-emerald-600" /> :
+                         session.outcome === "lost" ? <XCircle className="w-5 h-5 text-red-600" /> :
+                         <Pause className="w-5 h-5 text-amber-600" />}
+                      </div>
+                      <div>
+                        <div className="font-medium text-sm">{session.personaId}</div>
+                        <div className="text-xs text-muted-foreground">{new Date(session.createdAt).toLocaleDateString()} · {formatTime(session.duration)}</div>
+                      </div>
+                    </div>
+                    <Badge variant={session.status === "completed" ? "default" : "secondary"}>
+                      {session.status}
+                    </Badge>
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+          ))}
+        </div>
       )}
     </div>
   );
 
-  // ─── Main Layout ────────────────────────────────────────────────────────────
+  // ─── RENDER: Main Layout ────────────────────────────────────────────────────
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
-      <header className="sticky top-0 z-50 bg-background/80 backdrop-blur-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-14">
-            <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => { setView("dashboard"); setRoleplayStatus("idle"); }}>
-              <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={32} height={32} className="rounded" />
-              <div className="flex flex-col leading-tight">
-                <span className="font-bold text-sm tracking-wide">SGC TECH</span>
-                <span className="text-[10px] text-muted-foreground -mt-0.5">Sales Roleplay Arena</span>
-              </div>
+      {/* Header */}
+      <header className="sticky top-0 z-50 bg-white/95 backdrop-blur-sm border-b">
+        <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            {view !== "dashboard" && view !== "roleplay" && (
+              <Button variant="ghost" size="sm" onClick={() => setView("dashboard")} className="px-2">
+                ←
+              </Button>
+            )}
+            <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={28} height={28} className="rounded-md" />
+            <div>
+              <h1 className="text-sm font-bold leading-tight">SGC TECH</h1>
+              <span className="text-[10px] text-muted-foreground leading-tight">Roleplay Arena</span>
             </div>
-            <div className="flex items-center gap-1">
-              {[
-                { key: "dashboard", label: "Dashboard", icon: BarChart3 },
-                { key: "select", label: "Personas", icon: Users },
-                { key: "history", label: "History", icon: Clock },
-              ].map(item => (
-                <Button key={item.key} variant={view === item.key ? "secondary" : "ghost"} size="sm" onClick={() => { setView(item.key as AppView); if (item.key !== "roleplay") setRoleplayStatus("idle"); }} className="gap-1.5">
-                  <item.icon className="w-4 h-4" /><span className="hidden sm:inline">{item.label}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {view === "dashboard" && (
+              <>
+                <Button variant="ghost" size="sm" onClick={() => setView("select")} className="gap-1 text-xs">
+                  <Play className="w-3.5 h-3.5" /> Start
                 </Button>
-              ))}
-              <Separator orientation="vertical" className="h-6 mx-1" />
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button variant="ghost" size="sm" onClick={handleLogout} className="gap-1.5 text-muted-foreground hover:text-foreground">
-                      <LogOut className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Logout</TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
+                <Button variant="ghost" size="sm" onClick={() => setView("history")} className="gap-1 text-xs">
+                  <BarChart3 className="w-3.5 h-3.5" /> History
+                </Button>
+              </>
+            )}
+            <Button variant="ghost" size="sm" onClick={handleLogout} className="gap-1 text-xs text-muted-foreground">
+              <LogOut className="w-3.5 h-3.5" /> Exit
+            </Button>
           </div>
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 w-full py-2 lg:py-6">
-        <AnimatePresence mode="wait">
-          <motion.div key={view} initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }} transition={{ duration: 0.2 }}>
-            {view === "dashboard" && renderDashboard()}
-            {view === "select" && renderPersonaSelection()}
-            {view === "roleplay" && renderRoleplay()}
-            {view === "history" && renderHistory()}
-          </motion.div>
-        </AnimatePresence>
+      {/* Main Content */}
+      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-4 md:py-6">
+        {view === "dashboard" && renderDashboard()}
+        {view === "select" && renderPersonaSelection()}
+        {view === "roleplay" && renderRoleplay()}
+        {view === "history" && renderHistory()}
       </main>
 
-      <footer className="mt-auto border-t bg-slate-900 text-white">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex items-center justify-between text-xs">
-            <div className="flex items-center gap-2.5">
-              <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={24} height={24} className="rounded" />
-              <div className="flex flex-col leading-tight">
-                <span className="font-semibold text-white">SGC TECH</span>
-                <span className="text-slate-400">Sales Roleplay Arena — AI + Deepgram Voice</span>
-              </div>
-            </div>
-            <div className="flex items-center gap-3 text-slate-400">
-              <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />{PERSONAS.length} Personas</span>
-              <span className="flex items-center gap-1"><Volume2 className="w-3 h-3" />Deepgram Voice</span>
-            </div>
+      {/* Footer */}
+      <footer className="mt-auto border-t bg-slate-50">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={16} height={16} className="rounded-sm" />
+            <span className="text-[10px] text-muted-foreground">SGC TECH AI · Sales Roleplay Arena</span>
           </div>
+          <span className="text-[10px] text-muted-foreground">v1.0</span>
         </div>
       </footer>
 
-      {/* Session End Dialog */}
+      {/* End Session Dialog */}
       {renderEndDialog()}
     </div>
   );
