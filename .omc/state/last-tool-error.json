@@ -1,0 +1,7 @@
+{
+  "tool_name": "Read",
+  "tool_input_preview": "{\"file_path\":\"D:\\\\01_WORK_PROJECTS\\\\Roleplay\\\\CLAUDE.md\"}",
+  "error": "File does not exist. Note: your current working directory is D:\\01_WORK_PROJECTS\\Roleplay.",
+  "timestamp": "2026-06-02T08:05:40.561Z",
+  "retry_count": 1
+}

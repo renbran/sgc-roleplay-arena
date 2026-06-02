@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1779292211980,
+  "lastScanned": 1780387507408,
   "projectRoot": "D:\\01_WORK_PROJECTS\\Roleplay",
   "techStack": {
     "languages": [
@@ -85,7 +85,7 @@
       "path": "agent-ctx",
       "purpose": null,
       "fileCount": 2,
-      "lastAccessed": 1779292211895,
+      "lastAccessed": 1780387507340,
       "keyFiles": [
         "2-persona-agent.md",
         "6-frontend-agent.md"
@@ -95,7 +95,7 @@
       "path": "db",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1779292211895,
+      "lastAccessed": 1780387507341,
       "keyFiles": [
         "custom.db"
       ]
@@ -104,7 +104,7 @@
       "path": "download",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1779292211943,
+      "lastAccessed": 1780387507351,
       "keyFiles": [
         "README.md"
       ]
@@ -112,10 +112,12 @@
     "e2e": {
       "path": "e2e",
       "purpose": null,
-      "fileCount": 2,
-      "lastAccessed": 1779292211944,
+      "fileCount": 4,
+      "lastAccessed": 1780387507352,
       "keyFiles": [
+        "asr-validation.spec.ts",
         "auth-and-name.spec.ts",
+        "production-smoke.spec.ts",
         "smoke-all-personas.spec.ts"
       ]
     },
@@ -123,21 +125,21 @@
       "path": "examples",
       "purpose": "Example code",
       "fileCount": 0,
-      "lastAccessed": 1779292211944,
+      "lastAccessed": 1780387507352,
       "keyFiles": []
     },
     "mini-services": {
       "path": "mini-services",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1779292211944,
+      "lastAccessed": 1780387507352,
       "keyFiles": []
     },
     "prisma": {
       "path": "prisma",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1779292211945,
+      "lastAccessed": 1780387507353,
       "keyFiles": [
         "schema.prisma"
       ]
@@ -146,7 +148,7 @@
       "path": "public",
       "purpose": "Public files",
       "fileCount": 3,
-      "lastAccessed": 1779292211946,
+      "lastAccessed": 1780387507353,
       "keyFiles": [
         "logo.svg",
         "robots.txt",
@@ -157,21 +159,21 @@
       "path": "src",
       "purpose": "Source code",
       "fileCount": 0,
-      "lastAccessed": 1779292211947,
+      "lastAccessed": 1780387507353,
       "keyFiles": []
     },
     "test-results": {
       "path": "test-results",
       "purpose": null,
-      "fileCount": 1,
-      "lastAccessed": 1779292211948,
+      "fileCount": 0,
+      "lastAccessed": 1780387507354,
       "keyFiles": []
     },
     "upload": {
       "path": "upload",
       "purpose": null,
       "fileCount": 3,
-      "lastAccessed": 1779292211948,
+      "lastAccessed": 1780387507354,
       "keyFiles": [
         "livekit-sales-roleplay.zip",
         "ROLEPLAY-LIVE-RUNBOOK.md",
@@ -182,7 +184,7 @@
       "path": "src\\app",
       "purpose": "Application code",
       "fileCount": 3,
-      "lastAccessed": 1779292211950,
+      "lastAccessed": 1780387507358,
       "keyFiles": [
         "globals.css",
         "layout.tsx",
@@ -193,20 +195,27 @@
       "path": "src\\components",
       "purpose": "UI components",
       "fileCount": 0,
-      "lastAccessed": 1779292211950,
+      "lastAccessed": 1780387507359,
       "keyFiles": []
     },
     "src\\lib": {
       "path": "src\\lib",
       "purpose": "Library code",
       "fileCount": 2,
-      "lastAccessed": 1779292211951,
+      "lastAccessed": 1780387507359,
       "keyFiles": [
         "db.ts",
         "utils.ts"
       ]
     }
   },
-  "hotPaths": [],
+  "hotPaths": [
+    {
+      "path": "CLAUDE.md",
+      "accessCount": 1,
+      "lastAccessed": 1780387670380,
+      "type": "file"
+    }
+  ],
   "userDirectives": []
 }
