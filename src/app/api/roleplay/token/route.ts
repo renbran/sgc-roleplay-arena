@@ -83,13 +83,15 @@ export async function GET(request: Request) {
         const dispatch = await dispatchClient.createDispatch(
           roomName,
           "",
-          JSON.stringify({
-            persona: sanitizedPersona,
-            user_identity: identity,
-          }),
+          {
+            metadata: JSON.stringify({
+              persona: sanitizedPersona,
+              user_identity: identity,
+            }),
+          },
         );
 
-        dispatchId = dispatch.id || dispatch.dispatchId || null;
+        dispatchId = dispatch.id ?? null;
         dispatchCreated = true;
 
         // Update session status

@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -29,4 +29,24 @@ model AgentStatus {
   lastHeartbeat DateTime @default(now())
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+}
+
+model Score {
+  id                String   @id @default(cuid())
+  userName          String
+  personaId         String
+  personaName       String
+  difficulty        String   @default("medium")
+  rapport           Int
+  discovery         Int
+  objectionHandling Int
+  closing           Int
+  overall           Int
+  grade             String
+  outcome           String
+  summary           String
+  strengths         String
+  improvements      String
+  duration          Int      @default(0)
+  createdAt         DateTime @default(now())
 }

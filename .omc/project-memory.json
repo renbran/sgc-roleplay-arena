@@ -1,0 +1,212 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1779292211980,
+  "projectRoot": "D:\\01_WORK_PROJECTS\\Roleplay",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "next",
+        "version": "16.1.1",
+        "category": "fullstack"
+      },
+      {
+        "name": "react",
+        "version": "19.0.0",
+        "category": "frontend"
+      },
+      {
+        "name": "react-dom",
+        "version": "19.0.0",
+        "category": "frontend"
+      },
+      {
+        "name": "@playwright/test",
+        "version": "1.60.0",
+        "category": "testing"
+      }
+    ],
+    "packageManager": "npm",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "npm run build",
+    "testCommand": null,
+    "lintCommand": "npm run lint",
+    "devCommand": "npm run dev",
+    "scripts": {
+      "dev": "next dev -p 3000",
+      "build": "next build",
+      "start": "next start",
+      "lint": "eslint .",
+      "postinstall": "prisma generate",
+      "db:push": "prisma db push",
+      "db:generate": "prisma generate",
+      "db:migrate": "prisma migrate dev",
+      "db:reset": "prisma migrate reset"
+    }
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": "type-based"
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "examples",
+      "public",
+      "src"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "agent-ctx": {
+      "path": "agent-ctx",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1779292211895,
+      "keyFiles": [
+        "2-persona-agent.md",
+        "6-frontend-agent.md"
+      ]
+    },
+    "db": {
+      "path": "db",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1779292211895,
+      "keyFiles": [
+        "custom.db"
+      ]
+    },
+    "download": {
+      "path": "download",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1779292211943,
+      "keyFiles": [
+        "README.md"
+      ]
+    },
+    "e2e": {
+      "path": "e2e",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1779292211944,
+      "keyFiles": [
+        "auth-and-name.spec.ts",
+        "smoke-all-personas.spec.ts"
+      ]
+    },
+    "examples": {
+      "path": "examples",
+      "purpose": "Example code",
+      "fileCount": 0,
+      "lastAccessed": 1779292211944,
+      "keyFiles": []
+    },
+    "mini-services": {
+      "path": "mini-services",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1779292211944,
+      "keyFiles": []
+    },
+    "prisma": {
+      "path": "prisma",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1779292211945,
+      "keyFiles": [
+        "schema.prisma"
+      ]
+    },
+    "public": {
+      "path": "public",
+      "purpose": "Public files",
+      "fileCount": 3,
+      "lastAccessed": 1779292211946,
+      "keyFiles": [
+        "logo.svg",
+        "robots.txt",
+        "sgc-tech-logo.png"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 0,
+      "lastAccessed": 1779292211947,
+      "keyFiles": []
+    },
+    "test-results": {
+      "path": "test-results",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1779292211948,
+      "keyFiles": []
+    },
+    "upload": {
+      "path": "upload",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1779292211948,
+      "keyFiles": [
+        "livekit-sales-roleplay.zip",
+        "ROLEPLAY-LIVE-RUNBOOK.md",
+        "VERCEL-ROLEPLAY-SECRETS.md"
+      ]
+    },
+    "src\\app": {
+      "path": "src\\app",
+      "purpose": "Application code",
+      "fileCount": 3,
+      "lastAccessed": 1779292211950,
+      "keyFiles": [
+        "globals.css",
+        "layout.tsx",
+        "page.tsx"
+      ]
+    },
+    "src\\components": {
+      "path": "src\\components",
+      "purpose": "UI components",
+      "fileCount": 0,
+      "lastAccessed": 1779292211950,
+      "keyFiles": []
+    },
+    "src\\lib": {
+      "path": "src\\lib",
+      "purpose": "Library code",
+      "fileCount": 2,
+      "lastAccessed": 1779292211951,
+      "keyFiles": [
+        "db.ts",
+        "utils.ts"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}
