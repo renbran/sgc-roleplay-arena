@@ -30,8 +30,12 @@ import { useIsMobile } from "@/hooks/use-mobile";
 
 // ─── Auth Config ────────────────────────────────────────────────────────────
 
-const AUTH_STORAGE_KEY = "sgc-roleplay-auth";
-const APP_PASSWORD = "SGC2025";
+const AUTH_STORAGE_KEY = "sgc-roleplay-auth-v2";
+const USER_NAME_STORAGE_KEY = "sgc-roleplay-username-v2";
+const SCORES_STORAGE_KEY = "sgc-roleplay-scores-v2";
+const PENDING_SCORE_KEY = "sgc-roleplay-pending-score-v2";
+const ACTIVE_SESSION_KEY = "sgc-roleplay-active-session-v2";
+const APP_PASSWORD = process.env.NEXT_PUBLIC_APP_PASSWORD || "SGC2025";
 
 // ─── Persona Type Mapping ────────────────────────────────────────────────────
 
@@ -99,6 +103,23 @@ interface SessionRecord {
   createdAt: string;
 }
 
+interface ScoreRecord {
+  id: string;
+  userName: string;
+  personaId: string;
+  personaName: string;
+  date: string;
+  duration: number;
+  rapport: number;
+  discovery: number;
+  objectionHandling: number;
+  closing: number;
+  overall: number;
+  grade: "A" | "B" | "C" | "D" | "F";
+  outcome: "booked" | "partial" | "lost";
+  summary: string;
+}
+
 // ─── Main App ────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -107,6 +128,10 @@ export default function Home() {
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [showNameStep, setShowNameStep] = useState(false);
+  const [nameInput, setNameInput] = useState("");
+  const [nameError, setNameError] = useState("");
+  const [userName, setUserName] = useState<string>("");
 
   const [view, setView] = useState<AppView>("dashboard");
   const [selectedPersona, setSelectedPersona] = useState<Persona | null>(null);
@@ -115,6 +140,7 @@ export default function Home() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
+  const [savedScores, setSavedScores] = useState<ScoreRecord[]>([]);
   const [difficultyFilter, setDifficultyFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [showTips, setShowTips] = useState(true);
@@ -132,6 +158,22 @@ export default function Home() {
   const [chatSessionId, setChatSessionId] = useState<string>("");
   const [conversationStage, setConversationStage] = useState<string>("guarded");
 
+  // Booking + auto-score state
+  const [sessionBooked, setSessionBooked] = useState(false);
+  interface AutoScore {
+    rapport: number; discovery: number; objectionHandling: number; closing: number;
+    overall: number; grade: "A" | "B" | "C" | "D" | "F";
+    summary: string; strengths: string[]; improvements: string[];
+    outcome: "booked" | "partial" | "lost";
+  }
+  const [autoScore, setAutoScore] = useState<AutoScore | null>(null);
+  const [isScoring, setIsScoring] = useState(false);
+  const [scoreFailed, setScoreFailed] = useState(false);
+  const [pendingScoreRecovery, setPendingScoreRecovery] = useState<{
+    score: AutoScore; personaId: string; personaName: string;
+    userName: string; duration: number; date: string;
+  } | null>(null);
+
   // TTS state
   const [playingMessageIdx, setPlayingMessageIdx] = useState<number | null>(null);
   const [ttsLoading, setTtsLoading] = useState<number | null>(null);
@@ -142,7 +184,7 @@ export default function Home() {
   const ttsAudioContextRef = useRef<AudioContext | null>(null);
   const ttsSourceRef = useRef<AudioBufferSourceNode | null>(null);
   // Ref for latest playTTS to avoid stale closures in setTimeout
-  const playTTSRef = useRef<(text: string, messageIdx: number) => Promise<void>>();
+  const playTTSRef = useRef<((text: string, messageIdx: number) => Promise<void>) | undefined>(undefined);
   // Refs for recording guard conditions to avoid stale closures
   const isAudioPlayingRef = useRef(false);
   const playingMessageIdxRef = useRef<number | null>(null);
@@ -151,6 +193,7 @@ export default function Home() {
   // Microphone recording state
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
+  const [voiceStatus, setVoiceStatus] = useState<string>("");
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const micStreamRef = useRef<MediaStream | null>(null);
@@ -161,6 +204,7 @@ export default function Home() {
   const recordingStartRef = useRef<number>(0);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isStoppingRef = useRef(false);
+  const recordingMimeTypeRef = useRef<string>("audio/webm");
 
   // Session end state
   const [showEndDialog, setShowEndDialog] = useState(false);
@@ -176,19 +220,51 @@ export default function Home() {
 
   useEffect(() => {
     const stored = localStorage.getItem(AUTH_STORAGE_KEY);
+    let storedName = "";
     if (stored === "true") {
       setIsAuthenticated(true);
+      storedName = localStorage.getItem(USER_NAME_STORAGE_KEY) || "";
+      if (storedName) setUserName(storedName);
     }
+    try {
+      const storedScores = localStorage.getItem(SCORES_STORAGE_KEY);
+      if (storedScores) setSavedScores(JSON.parse(storedScores));
+    } catch { /* corrupt data — ignore */ }
+    // Recover any score that was computed but never saved (e.g. tab closed mid-dialog)
+    try {
+      const pending = localStorage.getItem(PENDING_SCORE_KEY);
+      if (pending) {
+        const ps = JSON.parse(pending);
+        if (ps.userName && ps.score && ps.personaName) {
+          setPendingScoreRecovery(ps);
+        }
+      }
+    } catch { /* corrupt data — ignore */ }
   }, []);
 
   const handleLogin = () => {
     if (authPassword === APP_PASSWORD) {
-      setIsAuthenticated(true);
       localStorage.setItem(AUTH_STORAGE_KEY, "true");
       setAuthError("");
+      const storedName = localStorage.getItem(USER_NAME_STORAGE_KEY);
+      if (storedName) {
+        setUserName(storedName);
+        setIsAuthenticated(true);
+      } else {
+        setShowNameStep(true);
+      }
     } else {
       setAuthError("Invalid password. Please try again.");
     }
+  };
+
+  const handleNameSubmit = () => {
+    const name = nameInput.trim();
+    if (!name) { setNameError("Please enter your name."); return; }
+    localStorage.setItem(USER_NAME_STORAGE_KEY, name);
+    setUserName(name);
+    setIsAuthenticated(true);
+    setShowNameStep(false);
   };
 
   const handleLogout = () => {
@@ -199,24 +275,24 @@ export default function Home() {
 
   // ─── Audio Unlock (for mobile browsers) ──────────────────────────────────
   // Mobile browsers require a user gesture before audio can play.
-  // We unlock the AudioContext on the first tap/click anywhere on the page.
+  // Keep listener active on every gesture so the AudioContext gets re-resumed
+  // if the browser suspends it between conversations.
   useEffect(() => {
     const unlock = () => {
-      if (audioUnlockedRef.current) return;
       audioUnlockedRef.current = true;
-      // Resume AudioContext on first user gesture
-      if (ttsAudioContextRef.current && ttsAudioContextRef.current.state === 'suspended') {
-        ttsAudioContextRef.current.resume().then(() => {
-          console.log('[audio] AudioContext unlocked');
-        }).catch(() => { /* unlock failed, will try again */ });
-      }
-      document.removeEventListener('click', unlock);
-      document.removeEventListener('touchstart', unlock);
-      document.removeEventListener('keydown', unlock);
+      // Resume AudioContext on every user gesture — browser may suspend it between sessions
+      try {
+        if (!ttsAudioContextRef.current || ttsAudioContextRef.current.state === 'closed') {
+          ttsAudioContextRef.current = new AudioContext();
+        }
+        if (ttsAudioContextRef.current.state === 'suspended') {
+          ttsAudioContextRef.current.resume().catch(() => {});
+        }
+      } catch { /* AudioContext not supported */ }
     };
-    document.addEventListener('click', unlock, { once: false });
-    document.addEventListener('touchstart', unlock, { once: false });
-    document.addEventListener('keydown', unlock, { once: false });
+    document.addEventListener('click', unlock);
+    document.addEventListener('touchstart', unlock);
+    document.addEventListener('keydown', unlock);
     return () => {
       document.removeEventListener('click', unlock);
       document.removeEventListener('touchstart', unlock);
@@ -233,7 +309,6 @@ export default function Home() {
       // Warm up the TTS backend (Deepgram + ZAI)
       fetch("/api/roleplay/tts", { method: "GET" })
         .then(res => res.json())
-        .then(data => console.log("[tts] Warmup:", data))
         .catch(() => { /* warmup failure is non-critical */ });
     }
   }, [isAuthenticated]);
@@ -270,9 +345,21 @@ export default function Home() {
     setTtsLoading(messageIdx);
     setTtsError(null);
 
+    // Resume AudioContext NOW, inside the user-gesture window, before any async work.
+    // If called after a fetch (which takes seconds), the gesture window has expired
+    // and resume() throws NotAllowedError on the second+ call.
+    let audioContext = ttsAudioContextRef.current;
     try {
-      console.log(`[tts] Requesting TTS for message ${messageIdx}, persona: ${selectedPersona?.id}`);
+      if (!audioContext || audioContext.state === 'closed') {
+        audioContext = new AudioContext();
+        ttsAudioContextRef.current = audioContext;
+      }
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+    } catch { /* will retry resume after fetch if needed */ }
 
+    try {
       // Call backend TTS API — now routes through Deepgram Aura-2 voices
       // with persona-specific voice mapping (11 distinct voices)
       const res = await fetch("/api/roleplay/tts", {
@@ -303,29 +390,23 @@ export default function Home() {
       }
 
       const provider = res.headers.get('X-TTS-Provider') || 'unknown';
-      console.log(`[tts] Audio from provider: ${provider}`);
 
       // Get audio data as ArrayBuffer for Web Audio API
       const arrayBuffer = await res.arrayBuffer();
       if (arrayBuffer.byteLength < 100) {
-        console.warn("[tts] TTS returned empty audio, size:", arrayBuffer.byteLength);
         setTtsLoading(null);
         setTtsError('Empty audio response');
         return;
       }
 
-      console.log(`[tts] Got audio data: ${arrayBuffer.byteLength} bytes (provider: ${provider})`);
-
-      // Use Web Audio API for reliable playback
-      let audioContext = ttsAudioContextRef.current;
+      // Reuse the already-running AudioContext (created/resumed before the fetch above)
       if (!audioContext || audioContext.state === 'closed') {
         audioContext = new AudioContext();
         ttsAudioContextRef.current = audioContext;
       }
-
-      // Resume context if suspended (autoplay policy)
+      // Second resume attempt — handles edge cases where context was suspended between calls
       if (audioContext.state === 'suspended') {
-        await audioContext.resume();
+        try { await audioContext.resume(); } catch { /* ignore */ }
       }
 
       // Decode the WAV audio data
@@ -345,15 +426,6 @@ export default function Home() {
       source.connect(audioContext.destination);
       ttsSourceRef.current = source;
 
-      source.onended = () => {
-        console.log('[tts] Audio playback ended');
-        setPlayingMessageIdx(null);
-        setIsAudioPlaying(false);
-        playingMessageIdxRef.current = null;
-        isAudioPlayingRef.current = false;
-        ttsSourceRef.current = null;
-      };
-
       setPlayingMessageIdx(messageIdx);
       setIsAudioPlaying(true);
       playingMessageIdxRef.current = messageIdx;
@@ -364,7 +436,6 @@ export default function Home() {
       const audioDuration = audioBuffer.duration * 1000 + 500;
       const safetyTimer = setTimeout(() => {
         if (playingMessageIdxRef.current === messageIdx) {
-          console.warn('[tts] Safety timeout — onended may not have fired, resetting state');
           setPlayingMessageIdx(null);
           setIsAudioPlaying(false);
           playingMessageIdxRef.current = null;
@@ -373,19 +444,20 @@ export default function Home() {
         }
       }, audioDuration);
 
-      const originalOnEnded = source.onended;
       source.onended = () => {
         clearTimeout(safetyTimer);
-        if (originalOnEnded) originalOnEnded();
+        setPlayingMessageIdx(null);
+        setIsAudioPlaying(false);
+        playingMessageIdxRef.current = null;
+        isAudioPlayingRef.current = false;
+        ttsSourceRef.current = null;
       };
 
       source.start(0);
-      console.log(`[tts] Audio playing successfully via Web Audio API (provider: ${provider})`);
 
-    } catch (err: any) {
-      console.error('[tts] TTS error:', err);
+    } catch (err: unknown) {
       stopTTS();
-      const errName = err?.name || '';
+      const errName = err instanceof Error ? err.name : '';
       if (errName === 'NotAllowedError') {
         setTtsError('Tap again to play audio');
       } else {
@@ -424,26 +496,34 @@ export default function Home() {
       const res = await fetch("/api/roleplay/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: chatSessionId, message: userMsg, personaId: selectedPersona.id }),
+        body: JSON.stringify({ sessionId: chatSessionId, message: userMsg, personaId: selectedPersona.id, userName }),
       });
       const data = await res.json();
       if (data.success) {
         if (data.stage) {
           setConversationStage(data.stage);
         }
+        if (data.booked) {
+          setSessionBooked(true);
+          setEndOutcome("won");
+        }
+        let autoPlayIdx: number | null = null;
         setChatMessages(prev => {
-          const newMessages = [...prev, { role: "assistant", content: data.response, timestamp: Date.now() }];
+          const newMessages: ChatMessage[] = [...prev, { role: "assistant" as const, content: String(data.response), timestamp: Date.now() }];
           if (autoVoice && audioUnlockedRef.current) {
-            const idx = newMessages.length - 1;
-            // Use ref to avoid stale closure — playTTSRef always has the latest playTTS
-            setTimeout(() => {
-              if (playTTSRef.current) {
-                playTTSRef.current(data.response, idx);
-              }
-            }, 300);
+            autoPlayIdx = newMessages.length - 1;
           }
           return newMessages;
         });
+        // Fire auto-voice outside the updater to avoid double-invoke in React Strict Mode
+        if (autoPlayIdx !== null) {
+          const idx = autoPlayIdx;
+          setTimeout(() => {
+            if (playTTSRef.current) {
+              playTTSRef.current(data.response, idx);
+            }
+          }, 300);
+        }
       } else {
         setChatMessages(prev => [...prev, { role: "system", content: `Error: ${data.error}`, timestamp: Date.now() }]);
       }
@@ -452,15 +532,16 @@ export default function Home() {
     }
     setIsChatLoading(false);
     isChatLoadingRef.current = false;
-  }, [selectedPersona, chatSessionId, autoVoice]);
+  }, [selectedPersona, chatSessionId, autoVoice, userName]);
 
   // ─── Voice Activity Detection (VAD) ─────────────────────────────────────────
 
-  const SILENCE_THRESHOLD = 6;
-  const SILENCE_DURATION = 3500;
-  const MIN_RECORDING_DURATION = 1200;
-  const MAX_RECORDING_DURATION = 120000;
+  const SILENCE_THRESHOLD = 10;       // balanced threshold for normal speech across laptop/phone mics
+  const SILENCE_DURATION = 2200;      // keep turns responsive and avoid long dead-air waits
+  const MIN_RECORDING_DURATION = 1500;
+  const MAX_RECORDING_DURATION = 300000;
   const SPEECH_DETECTION_INTERVAL = 150;
+  const SUSTAINED_SPEECH_MS = 300;    // short sustained speech gate to avoid false-positive ambient triggers
 
   const cleanupRecording = useCallback(() => {
     if (vadIntervalRef.current) {
@@ -494,6 +575,7 @@ export default function Home() {
 
     const duration = Date.now() - recordingStartRef.current;
     if (duration < MIN_RECORDING_DURATION || chunks.length === 0) {
+      setVoiceStatus("No speech detected. Please speak closer to the mic and try again.");
       setIsRecording(false);
       setRecordingDuration(0);
       isStoppingRef.current = false;
@@ -504,9 +586,11 @@ export default function Home() {
     setRecordingDuration(0);
 
     try {
-      const audioBlob = new Blob(chunks, { type: "audio/webm" });
+      const recordedMimeType = recordingMimeTypeRef.current || "audio/webm";
+      const audioBlob = new Blob(chunks, { type: recordedMimeType });
 
       if (audioBlob.size < 1000) {
+        setVoiceStatus("Audio was too quiet. Try again with a louder voice.");
         isStoppingRef.current = false;
         return;
       }
@@ -522,6 +606,7 @@ export default function Home() {
       });
 
       if (!base64Audio) {
+        setVoiceStatus("Could not process recorded audio. Please retry.");
         isStoppingRef.current = false;
         return;
       }
@@ -530,19 +615,24 @@ export default function Home() {
         const res = await fetch("/api/roleplay/asr", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ audio: base64Audio }),
+          body: JSON.stringify({ audio: base64Audio, mimeType: recordedMimeType }),
         });
         const data = await res.json();
         if (data.success && data.text && data.text.trim()) {
+          setVoiceStatus("");
           await sendChatMessageWithText(data.text.trim(), true);
+        } else {
+          setVoiceStatus("Could not transcribe clearly. Please retry.");
         }
       } catch (err) {
         console.error("ASR error:", err);
+        setVoiceStatus("Speech service is temporarily unavailable. Please retry.");
       } finally {
         isStoppingRef.current = false;
       }
     } catch (err) {
       console.error("Audio processing error:", err);
+      setVoiceStatus("Audio processing failed. Please retry.");
       isStoppingRef.current = false;
     }
   }, [cleanupRecording, sendChatMessageWithText]);
@@ -560,10 +650,20 @@ export default function Home() {
 
   const startRecording = useCallback(async () => {
     // Use refs for guard checks to avoid stale closure issues
-    if (isAudioPlayingRef.current || playingMessageIdxRef.current !== null) return;
-    if (isRecording || isStoppingRef.current) return;
-    if (isChatLoadingRef.current) return;
-    if (chatInput.trim()) return;
+    if (isAudioPlayingRef.current || playingMessageIdxRef.current !== null) {
+      setVoiceStatus("Stop voice playback before recording.");
+      return;
+    }
+    if (isRecording || isStoppingRef.current) {
+      setVoiceStatus("Recording is already in progress.");
+      return;
+    }
+    if (isChatLoadingRef.current) {
+      setVoiceStatus("Please wait for the assistant response before recording.");
+      return;
+    }
+    setVoiceStatus("");
+    setChatInput("");
     setInputMode("voice");
 
     try {
@@ -582,6 +682,7 @@ export default function Home() {
           ? "audio/webm"
           : "audio/mp4";
 
+      recordingMimeTypeRef.current = mimeType;
       const mediaRecorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
@@ -614,7 +715,8 @@ export default function Home() {
         analyserRef.current = analyser;
 
         const dataArray = new Uint8Array(analyser.fftSize);
-        let hasDetectedSpeech = false;
+        let speechStartTime = 0;   // when we first crossed the threshold
+        let silenceArmed = false;  // true once sustained speech is confirmed
 
         vadIntervalRef.current = setInterval(() => {
           if (!analyserRef.current || isStoppingRef.current) {
@@ -635,13 +737,21 @@ export default function Home() {
           const elapsed = now - recordingStartRef.current;
 
           if (rms > SILENCE_THRESHOLD) {
-            hasDetectedSpeech = true;
-            silenceStartRef.current = 0;
-          } else if (hasDetectedSpeech && silenceStartRef.current === 0) {
-            silenceStartRef.current = now;
+            // Track how long we've been above threshold (sustained speech guard)
+            if (speechStartTime === 0) speechStartTime = now;
+            if (!silenceArmed && (now - speechStartTime) >= SUSTAINED_SPEECH_MS) {
+              silenceArmed = true;
+            }
+            silenceStartRef.current = 0; // reset silence timer whenever voice is detected
+          } else {
+            speechStartTime = 0; // reset sustained-speech counter on any dip
+            if (silenceArmed && silenceStartRef.current === 0) {
+              silenceStartRef.current = now; // start silence countdown
+            }
           }
 
-          if (hasDetectedSpeech && silenceStartRef.current > 0 && (now - silenceStartRef.current) > SILENCE_DURATION) {
+          // Only auto-stop after sustained speech was confirmed + 5s of silence
+          if (silenceArmed && silenceStartRef.current > 0 && (now - silenceStartRef.current) > SILENCE_DURATION) {
             if (elapsed > MIN_RECORDING_DURATION) {
               stopRecording();
             }
@@ -671,9 +781,10 @@ export default function Home() {
 
     } catch (err) {
       console.error("Microphone access error:", err);
+      setVoiceStatus("Microphone access was blocked. Allow mic permission and retry.");
       setIsRecording(false);
     }
-  }, [isRecording, chatInput, stopRecording, processRecordedAudio]);
+  }, [isRecording, stopRecording, processRecordedAudio]);
 
   // ─── Data Fetching ──────────────────────────────────────────────────────────
 
@@ -716,6 +827,35 @@ export default function Home() {
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [roleplayStatus]);
 
+  // Warn browser before tab close/refresh during active session
+  useEffect(() => {
+    if (roleplayStatus !== "active") return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [roleplayStatus]);
+
+  // Checkpoint active session to localStorage so it survives accidental refresh
+  useEffect(() => {
+    if (roleplayStatus !== "active" || !selectedPersona) return;
+    const userMsgs = chatMessages.filter(m => m.role !== "system");
+    if (userMsgs.length === 0) return;
+    try {
+      localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify({
+        personaId: selectedPersona.id,
+        personaName: selectedPersona.name,
+        userName,
+        messageCount: userMsgs.length,
+        lastMessage: userMsgs[userMsgs.length - 1]?.content?.slice(0, 120) ?? "",
+        callTimer,
+        timestamp: Date.now(),
+      }));
+    } catch { /* storage full */ }
+  }, [chatMessages, roleplayStatus, selectedPersona, userName, callTimer]);
+
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
@@ -725,6 +865,12 @@ export default function Home() {
   // ─── Roleplay Actions ───────────────────────────────────────────────────────
 
   const startTextRoleplay = (persona: Persona) => {
+    stopTTS();
+    setTtsError(null);
+    isStoppingRef.current = false;
+    setSessionBooked(false);
+    setAutoScore(null);
+    setIsScoring(false);
     setSelectedPersona(persona);
     setMode("text");
     setInputMode("text");
@@ -740,7 +886,7 @@ export default function Home() {
     setConversationStage("guarded");
     const openingMsg = { role: "assistant" as const, content: persona.openingLine, timestamp: Date.now() };
     setChatMessages([
-      { role: "system", content: `You are now in a sales roleplay with ${persona.name}. Ask great questions to discover their pain points.`, timestamp: Date.now() },
+      { role: "system", content: `You are now in a sales roleplay with ${persona.name}${userName ? ` — rep: ${userName}` : ""}. Ask great questions to discover their pain points.`, timestamp: Date.now() },
       openingMsg,
     ]);
     // Don't auto-play TTS on start - let user click the speaker button
@@ -748,6 +894,21 @@ export default function Home() {
   };
 
   const startVoiceRoleplay = (persona: Persona) => {
+    stopTTS();
+    setTtsError(null);
+    isStoppingRef.current = false;
+    setSessionBooked(false);
+    setAutoScore(null);
+    setIsScoring(false);
+    // Re-resume AudioContext here — we're inside a click handler (user gesture)
+    try {
+      if (!ttsAudioContextRef.current || ttsAudioContextRef.current.state === 'closed') {
+        ttsAudioContextRef.current = new AudioContext();
+      }
+      if (ttsAudioContextRef.current.state === 'suspended') {
+        ttsAudioContextRef.current.resume().catch(() => {});
+      }
+    } catch { /* AudioContext not supported */ }
     setSelectedPersona(persona);
     setMode("voice");
     setInputMode("voice");
@@ -765,7 +926,7 @@ export default function Home() {
     setConversationStage("guarded");
     const openingMsg = { role: "assistant" as const, content: persona.openingLine, timestamp: Date.now() };
     setChatMessages([
-      { role: "system", content: `Voice call with ${persona.name}. Tap the mic button to speak, or type your message.`, timestamp: Date.now() },
+      { role: "system", content: `Voice call with ${persona.name}${userName ? ` — rep: ${userName}` : ""}. Tap the mic button to speak, or type your message.`, timestamp: Date.now() },
       openingMsg,
     ]);
     // Don't auto-play TTS on start - warmup may not be complete
@@ -802,11 +963,103 @@ export default function Home() {
     fetchSessions();
   };
 
+  const triggerAutoScore = useCallback(async () => {
+    if (!selectedPersona || isScoring || autoScore) return;
+    const scorableMessages = chatMessages.filter(m => m.role === "user" || m.role === "assistant");
+    if (scorableMessages.length < 4) return;
+    setIsScoring(true);
+    setScoreFailed(false);
+    try {
+      const res = await fetch("/api/roleplay/score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: scorableMessages, personaId: selectedPersona.id, userName }),
+      });
+      if (!res.ok) { setScoreFailed(true); setIsScoring(false); return; }
+      const data = await res.json();
+      if (data.success && data.score) {
+        setAutoScore(data.score);
+        // Backup score immediately — survives dialog close or tab crash
+        try {
+          localStorage.setItem(PENDING_SCORE_KEY, JSON.stringify({
+            score: data.score,
+            personaId: selectedPersona.id,
+            personaName: selectedPersona.name,
+            userName,
+            duration: callTimer,
+            date: new Date().toISOString(),
+          }));
+        } catch { /* storage full */ }
+        if (!sessionBooked) {
+          setEndOutcome(data.score.outcome === "booked" ? "won" : data.score.outcome === "lost" ? "lost" : "partial");
+        }
+      } else {
+        setScoreFailed(true);
+      }
+    } catch {
+      setScoreFailed(true);
+    }
+    setIsScoring(false);
+  }, [selectedPersona, isScoring, autoScore, chatMessages, sessionBooked, userName, callTimer]);
+
   const handleEndSession = () => {
     setShowEndDialog(true);
+    triggerAutoScore();
   };
 
+  const persistScore = useCallback((score: AutoScore) => {
+    if (!selectedPersona || !userName) return;
+    const record: ScoreRecord = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      userName,
+      personaId: selectedPersona.id,
+      personaName: selectedPersona.name,
+      date: new Date().toISOString(),
+      duration: callTimer,
+      rapport: score.rapport,
+      discovery: score.discovery,
+      objectionHandling: score.objectionHandling,
+      closing: score.closing,
+      overall: score.overall,
+      grade: score.grade,
+      outcome: score.outcome,
+      summary: score.summary,
+    };
+    setSavedScores(prev => {
+      const updated = [record, ...prev].slice(0, 200);
+      try {
+        localStorage.setItem(SCORES_STORAGE_KEY, JSON.stringify(updated));
+        localStorage.removeItem(PENDING_SCORE_KEY);
+        localStorage.removeItem(ACTIVE_SESSION_KEY);
+      } catch { /* storage full */ }
+      return updated;
+    });
+    fetch("/api/scores", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userName,
+        personaId: selectedPersona.id,
+        personaName: selectedPersona.name,
+        difficulty: selectedPersona.difficulty,
+        rapport: score.rapport,
+        discovery: score.discovery,
+        objectionHandling: score.objectionHandling,
+        closing: score.closing,
+        overall: score.overall,
+        grade: score.grade,
+        outcome: score.outcome,
+        summary: score.summary,
+        strengths: score.strengths,
+        improvements: score.improvements,
+        duration: callTimer,
+      }),
+    }).catch(() => {});
+  }, [selectedPersona, userName, callTimer]);
+
   const handleSaveEndSession = async () => {
+    if (autoScore) persistScore(autoScore);
+    try { localStorage.removeItem(ACTIVE_SESSION_KEY); } catch { /* ignore */ }
     await endRoleplay(endOutcome);
     setShowEndDialog(false);
     setView("dashboard");
@@ -855,39 +1108,65 @@ export default function Home() {
               </div>
               <CardTitle className="text-xl text-white">SGC TECH Roleplay Arena</CardTitle>
               <CardDescription className="text-slate-400">
-                Enter your access password to continue
+                {showNameStep ? "One more step — tell us your name" : "Enter your access password to continue"}
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            {!showNameStep ? (
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <Input
+                      type={showPassword ? "text" : "password"}
+                      placeholder="Enter password"
+                      value={authPassword}
+                      onChange={e => { setAuthPassword(e.target.value); setAuthError(""); }}
+                      onKeyDown={e => { if (e.key === "Enter") handleLogin(); }}
+                      className="pl-10 pr-10 bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-emerald-500"
+                      autoFocus
+                    />
+                    <button
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-300"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  {authError && (
+                    <motion.p initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-red-400 flex items-center gap-1">
+                      <XCircle className="w-3.5 h-3.5" /> {authError}
+                    </motion.p>
+                  )}
+                </div>
+                <Button onClick={handleLogin} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white gap-2" size="lg">
+                  <Shield className="w-4 h-4" /> Access Arena
+                </Button>
+              </CardContent>
+            ) : (
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <p className="text-sm text-slate-400 text-center">
+                    Your name will appear in scorecard feedback and is used by the AI persona during the call.
+                  </p>
                   <Input
-                    type={showPassword ? "text" : "password"}
-                    placeholder="Enter password"
-                    value={authPassword}
-                    onChange={e => { setAuthPassword(e.target.value); setAuthError(""); }}
-                    onKeyDown={e => { if (e.key === "Enter") handleLogin(); }}
-                    className="pl-10 pr-10 bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-emerald-500"
+                    placeholder="Your full name"
+                    value={nameInput}
+                    onChange={e => { setNameInput(e.target.value); setNameError(""); }}
+                    onKeyDown={e => { if (e.key === "Enter") handleNameSubmit(); }}
+                    className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-emerald-500"
                     autoFocus
                   />
-                  <button
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-300"
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
+                  {nameError && (
+                    <motion.p initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-red-400 flex items-center gap-1">
+                      <XCircle className="w-3.5 h-3.5" /> {nameError}
+                    </motion.p>
+                  )}
                 </div>
-                {authError && (
-                  <motion.p initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-red-400 flex items-center gap-1">
-                    <XCircle className="w-3.5 h-3.5" /> {authError}
-                  </motion.p>
-                )}
-              </div>
-              <Button onClick={handleLogin} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white gap-2" size="lg">
-                <Shield className="w-4 h-4" /> Access Arena
-              </Button>
-            </CardContent>
+                <Button onClick={handleNameSubmit} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white gap-2" size="lg">
+                  <ArrowRight className="w-4 h-4" /> Enter Arena
+                </Button>
+              </CardContent>
+            )}
             <CardFooter className="justify-center pb-4">
               <p className="text-xs text-slate-500 flex items-center gap-1">
                 <Lock className="w-3 h-3" /> Secured access — authorized personnel only
@@ -899,10 +1178,125 @@ export default function Home() {
     );
   }
 
+  // ─── RENDER: Name Registration (returning users with no stored name) ────────
+
+  if (isAuthenticated && !userName) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-4">
+        <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHZpZXdCb3g9IjAgMCA0MCA0MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxjaXJjbGUgY3g9IjIwIiBjeT0iMjAiIHI9IjEiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC4wNSkiLz48L2c+PC9zdmc+')] opacity-50" />
+        <motion.div
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="w-full max-w-md relative z-10"
+        >
+          <Card className="border-slate-700 bg-slate-800/80 backdrop-blur-sm shadow-2xl">
+            <CardHeader className="text-center pb-4">
+              <div className="flex justify-center mb-4">
+                <div className="w-16 h-16 rounded-xl bg-white/10 p-2 flex items-center justify-center">
+                  <Image src="/sgc-tech-logo.png" alt="SGC TECH" width={48} height={48} className="rounded-lg" />
+                </div>
+              </div>
+              <CardTitle className="text-xl text-white">Welcome to the Arena</CardTitle>
+              <CardDescription className="text-slate-400">What should the AI call you during your roleplays?</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Input
+                  placeholder="Your full name"
+                  value={nameInput}
+                  onChange={e => { setNameInput(e.target.value); setNameError(""); }}
+                  onKeyDown={e => { if (e.key === "Enter") handleNameSubmit(); }}
+                  className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-emerald-500"
+                  autoFocus
+                />
+                {nameError && (
+                  <motion.p initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-red-400 flex items-center gap-1">
+                    <XCircle className="w-3.5 h-3.5" /> {nameError}
+                  </motion.p>
+                )}
+              </div>
+              <Button onClick={handleNameSubmit} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white gap-2" size="lg">
+                <ArrowRight className="w-4 h-4" /> Enter Arena
+              </Button>
+            </CardContent>
+          </Card>
+        </motion.div>
+      </div>
+    );
+  }
+
   // ─── RENDER: Dashboard ─────────────────────────────────────────────────────
 
   const renderDashboard = () => (
     <div className="space-y-6 md:space-y-8">
+      {/* Pending score recovery banner */}
+      {pendingScoreRecovery && (
+        <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-2 text-amber-800 min-w-0">
+            <AlertCircle className="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
+            <span>
+              Unsaved score from your last session with <strong>{pendingScoreRecovery.personaName}</strong> — save it now?
+            </span>
+          </div>
+          <div className="flex items-center gap-2 self-end sm:self-auto sm:shrink-0">
+            <Button size="sm" variant="outline" className="border-amber-300 text-amber-800 hover:bg-amber-100 h-7 text-xs" onClick={() => {
+              setPendingScoreRecovery(null);
+              try { localStorage.removeItem(PENDING_SCORE_KEY); } catch { /* ignore */ }
+            }}>Dismiss</Button>
+            <Button size="sm" className="bg-amber-600 hover:bg-amber-700 h-7 text-xs gap-1" onClick={() => {
+              const ps = pendingScoreRecovery;
+              const record: ScoreRecord = {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                userName: ps.userName,
+                personaId: ps.personaId,
+                personaName: ps.personaName,
+                date: ps.date,
+                duration: ps.duration,
+                rapport: ps.score.rapport,
+                discovery: ps.score.discovery,
+                objectionHandling: ps.score.objectionHandling,
+                closing: ps.score.closing,
+                overall: ps.score.overall,
+                grade: ps.score.grade,
+                outcome: ps.score.outcome,
+                summary: ps.score.summary,
+              };
+              setSavedScores(prev => {
+                const updated = [record, ...prev].slice(0, 200);
+                try {
+                  localStorage.setItem(SCORES_STORAGE_KEY, JSON.stringify(updated));
+                  localStorage.removeItem(PENDING_SCORE_KEY);
+                } catch { /* storage full */ }
+                return updated;
+              });
+              fetch("/api/scores", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  userName: ps.userName,
+                  personaId: ps.personaId,
+                  personaName: ps.personaName,
+                  rapport: ps.score.rapport,
+                  discovery: ps.score.discovery,
+                  objectionHandling: ps.score.objectionHandling,
+                  closing: ps.score.closing,
+                  overall: ps.score.overall,
+                  grade: ps.score.grade,
+                  outcome: ps.score.outcome,
+                  summary: ps.score.summary,
+                  strengths: ps.score.strengths,
+                  improvements: ps.score.improvements,
+                  duration: ps.duration,
+                }),
+              }).catch(() => {});
+              setPendingScoreRecovery(null);
+            }}>
+              <CheckCircle2 className="w-3 h-3" /> Save Score
+            </Button>
+          </div>
+        </div>
+      )}
       {/* Hero */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}
         className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6 md:p-12">
@@ -1194,6 +1588,27 @@ export default function Home() {
           </div>
         )}
 
+        {/* Meeting Booked Banner */}
+        {sessionBooked && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex items-center justify-between gap-3 px-4 py-3 rounded-lg bg-emerald-50 border border-emerald-300 mb-2 shrink-0"
+          >
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+              <div>
+                <div className="text-sm font-semibold text-emerald-800">Meeting Booked!</div>
+                <div className="text-xs text-emerald-700">{selectedPersona?.name} agreed to a meeting. Great close!</div>
+              </div>
+            </div>
+            <Button size="sm" variant="outline" className="border-emerald-400 text-emerald-700 hover:bg-emerald-100 shrink-0 text-xs"
+              onClick={handleEndSession}>
+              End Session
+            </Button>
+          </motion.div>
+        )}
+
         {/* Chat Messages */}
         <div className="flex-1 overflow-y-auto rounded-lg border bg-white p-3 mb-2" style={{ minHeight: '200px' }}>
           <div className="space-y-3">
@@ -1316,7 +1731,7 @@ export default function Home() {
             variant={isRecording ? "destructive" : effectiveInputMode === "voice" ? "default" : "outline"}
             size={effectiveInputMode === "voice" ? "default" : "icon"}
             onClick={isRecording ? stopRecording : startRecording}
-            disabled={!isRecording && (isAudioPlaying || playingMessageIdx !== null || isChatLoading || effectiveInputMode === "text")}
+            disabled={!isRecording && (isAudioPlaying || playingMessageIdx !== null || isChatLoading)}
             className={`shrink-0 relative ${effectiveInputMode === "voice" ? "w-11 h-11" : "w-9 h-9"}`}
           >
             {isRecording ? (
@@ -1359,7 +1774,7 @@ export default function Home() {
           {isMobile && effectiveInputMode === "voice" && (
             <div className="flex-1 flex items-center justify-center">
               <span className="text-xs text-muted-foreground">
-                {isRecording ? `Recording · ${recordingDuration}s` : isAudioPlaying ? "Listening..." : "Tap mic to speak"}
+                {isRecording ? `Recording · ${recordingDuration}s` : voiceStatus || (isAudioPlaying ? "Listening..." : "Tap mic to speak")}
               </span>
             </div>
           )}
@@ -1375,6 +1790,13 @@ export default function Home() {
             {isMobile && <span className="text-xs">End</span>}
           </Button>
         </div>
+
+        {voiceStatus && !isRecording && (
+          <div className="mt-2 text-xs text-amber-600 flex items-center gap-1.5">
+            <AlertCircle className="w-3.5 h-3.5" />
+            <span>{voiceStatus}</span>
+          </div>
+        )}
       </div>
     );
   };
@@ -1500,9 +1922,12 @@ export default function Home() {
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={() => {
             if (roleplayStatus === "active") {
-              if (confirm("End the current session?")) handleEndSession();
+              if (!confirm("End the current session?")) return;
+              handleEndSession();
+              return;
             }
-            setView("dashboard"); setRoleplayStatus("idle");
+            setView("dashboard");
+            setRoleplayStatus("idle");
           }} className="shrink-0 px-2">
             <span className="lg:hidden">←</span><span className="hidden lg:inline">Back</span>
           </Button>
@@ -1533,6 +1958,7 @@ export default function Home() {
               warming: { label: "Warming", color: "bg-amber-50 text-amber-600 border-amber-200", icon: MessageSquare },
               discovery: { label: "Discovery", color: "bg-sky-50 text-sky-600 border-sky-200", icon: Target },
               consideration: { label: "Open", color: "bg-emerald-50 text-emerald-600 border-emerald-200", icon: CheckCircle2 },
+              closing: { label: "Closing", color: "bg-violet-50 text-violet-600 border-violet-200", icon: Sparkles },
             };
             const cfg = stageConfig[conversationStage] || stageConfig.guarded;
             return (
@@ -1589,19 +2015,21 @@ export default function Home() {
   const renderEndDialog = () => {
     const duration = sessionStartTime ? Math.round((Date.now() - sessionStartTime) / 1000) : callTimer;
     const messageCount = chatMessages.filter(m => m.role === "user" || m.role === "assistant").length;
+    const tooShort = messageCount < 4 && !autoScore && !isScoring;
 
     return (
-      <Dialog open={showEndDialog} onOpenChange={setShowEndDialog}>
-        <DialogContent className="sm:max-w-md">
+      <Dialog open={showEndDialog} onOpenChange={(open) => { if (!open && isScoring) return; setShowEndDialog(open); }}>
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Award className="w-5 h-5 text-amber-500" />
               Session Complete
             </DialogTitle>
             <DialogDescription>
-              Rate your performance in this roleplay session
+              {isScoring ? "Analyzing your performance..." : autoScore ? "AI-scored performance breakdown" : tooShort ? "Session ended too early to score" : "AI scoring in progress"}
             </DialogDescription>
           </DialogHeader>
+
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-lg bg-slate-50 p-3 text-center">
@@ -1626,43 +2054,141 @@ export default function Home() {
               </div>
             )}
 
-            <div>
-              <label className="text-sm font-medium mb-2 block">Outcome</label>
-              <div className="grid grid-cols-3 gap-2">
-                {([
-                  { key: "won" as const, label: "Won", icon: CheckCircle2, activeColor: "border-emerald-500 bg-emerald-100 text-emerald-800 ring-2 ring-emerald-500" },
-                  { key: "partial" as const, label: "Partial", icon: Pause, activeColor: "border-amber-500 bg-amber-100 text-amber-800 ring-2 ring-amber-500" },
-                  { key: "lost" as const, label: "Lost", icon: XCircle, activeColor: "border-red-500 bg-red-100 text-red-800 ring-2 ring-red-500" },
-                ]).map(({ key, label, icon: Icon, activeColor }) => (
-                  <button
-                    key={key}
-                    onClick={() => setEndOutcome(key)}
-                    className={`flex flex-col items-center gap-1 p-3 rounded-lg border-2 transition-all ${
-                      endOutcome === key ? activeColor : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                    }`}
-                  >
-                    <Icon className="w-5 h-5" />
-                    <span className="text-xs font-medium">{label}</span>
-                  </button>
-                ))}
+            {/* Too short — no scoring possible */}
+            {tooShort && (
+              <div className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <AlertCircle className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-slate-700">Not enough conversation to score</p>
+                  <p className="text-xs text-muted-foreground">At least 4 messages are needed for AI scoring. This session will not be saved to history.</p>
+                </div>
               </div>
-            </div>
+            )}
 
-            <div>
-              <label className="text-sm font-medium mb-2 block">Notes</label>
-              <Textarea
-                value={endNotes}
-                onChange={e => setEndNotes(e.target.value)}
-                placeholder="What went well? What could you improve?"
-                rows={3}
-              />
-            </div>
+            {/* Scoring in progress */}
+            {isScoring && !autoScore && (
+              <div className="flex items-center justify-center gap-2 py-4 rounded-lg bg-slate-50 border border-dashed">
+                <RefreshCw className="w-4 h-4 text-slate-400 animate-spin" />
+                <span className="text-sm text-muted-foreground">Scoring your performance...</span>
+              </div>
+            )}
+
+            {/* Score results */}
+            {autoScore && (
+              <div className="rounded-lg border bg-slate-50 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold">AI Performance Score</span>
+                  <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-sm font-bold ${
+                    autoScore.grade === "A" ? "bg-emerald-100 text-emerald-700" :
+                    autoScore.grade === "B" ? "bg-sky-100 text-sky-700" :
+                    autoScore.grade === "C" ? "bg-amber-100 text-amber-700" :
+                    "bg-red-100 text-red-700"
+                  }`}>
+                    <span className="text-base">{autoScore.grade}</span>
+                    <span className="text-xs font-normal">({autoScore.overall}/100)</span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    { label: "Rapport", value: autoScore.rapport },
+                    { label: "Discovery", value: autoScore.discovery },
+                    { label: "Objections", value: autoScore.objectionHandling },
+                    { label: "Closing", value: autoScore.closing },
+                  ]).map(({ label, value }) => (
+                    <div key={label} className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">{label}</span>
+                        <span className="font-medium">{value}</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                        <div className={`h-full rounded-full transition-all ${
+                          value >= 75 ? "bg-emerald-500" : value >= 55 ? "bg-amber-500" : "bg-red-400"
+                        }`} style={{ width: `${value}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground italic">{autoScore.summary}</p>
+                {autoScore.strengths.length > 0 && (
+                  <div className="space-y-1">
+                    {autoScore.strengths.map((s, i) => (
+                      <div key={i} className="flex items-start gap-1.5 text-xs">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0 mt-0.5" />
+                        <span className="text-emerald-800">{s}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {autoScore.improvements.length > 0 && (
+                  <div className="space-y-1">
+                    {autoScore.improvements.map((imp, i) => (
+                      <div key={i} className="flex items-start gap-1.5 text-xs">
+                        <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0 mt-0.5" />
+                        <span className="text-amber-800">{imp}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Outcome + notes — only shown when there's enough to evaluate */}
+            {!tooShort && (
+              <>
+                <div>
+                  <label className="text-sm font-medium mb-2 block">
+                    Outcome{autoScore && <span className="text-xs text-muted-foreground font-normal ml-1">(auto-detected — override if needed)</span>}
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      { key: "won" as const, label: "Won", icon: CheckCircle2, activeColor: "border-emerald-500 bg-emerald-100 text-emerald-800 ring-2 ring-emerald-500" },
+                      { key: "partial" as const, label: "Partial", icon: Pause, activeColor: "border-amber-500 bg-amber-100 text-amber-800 ring-2 ring-amber-500" },
+                      { key: "lost" as const, label: "Lost", icon: XCircle, activeColor: "border-red-500 bg-red-100 text-red-800 ring-2 ring-red-500" },
+                    ]).map(({ key, label, icon: Icon, activeColor }) => (
+                      <button
+                        key={key}
+                        onClick={() => setEndOutcome(key)}
+                        className={`flex flex-col items-center gap-1 p-3 rounded-lg border-2 transition-all ${
+                          endOutcome === key ? activeColor : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                        }`}
+                      >
+                        <Icon className="w-5 h-5" />
+                        <span className="text-xs font-medium">{label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Notes</label>
+                  <Textarea
+                    value={endNotes}
+                    onChange={e => setEndNotes(e.target.value)}
+                    placeholder="What went well? What could you improve?"
+                    rows={2}
+                  />
+                </div>
+              </>
+            )}
           </div>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setShowEndDialog(false)}>Cancel</Button>
-            <Button onClick={handleSaveEndSession} className="gap-1">
-              <CheckCircle2 className="w-4 h-4" /> Save & Close
-            </Button>
+
+          <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            {scoreFailed && !autoScore && !isScoring && !tooShort && (
+              <Button variant="outline" onClick={triggerAutoScore} className="w-full gap-1 text-amber-700 border-amber-300 hover:bg-amber-50 sm:w-auto">
+                <RefreshCw className="w-4 h-4" /> Retry Score
+              </Button>
+            )}
+            {tooShort ? (
+              <Button onClick={() => { setShowEndDialog(false); setView("dashboard"); setRoleplayStatus("idle"); }} className="w-full sm:w-auto">
+                Close
+              </Button>
+            ) : (
+              <>
+                <Button variant="outline" onClick={() => setShowEndDialog(false)} disabled={isScoring} className="w-full sm:w-auto">Cancel</Button>
+                <Button onClick={handleSaveEndSession} className="w-full gap-1 sm:w-auto" disabled={isScoring}>
+                  <CheckCircle2 className="w-4 h-4" /> Save & Close
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1671,48 +2197,79 @@ export default function Home() {
 
   // ─── RENDER: History ────────────────────────────────────────────────────────
 
+  const gradeColor = (grade: string) => {
+    if (grade === "A") return "bg-emerald-100 text-emerald-700 border-emerald-200";
+    if (grade === "B") return "bg-sky-100 text-sky-700 border-sky-200";
+    if (grade === "C") return "bg-amber-100 text-amber-700 border-amber-200";
+    if (grade === "D") return "bg-orange-100 text-orange-700 border-orange-200";
+    return "bg-red-100 text-red-700 border-red-200";
+  };
+
+  const outcomeIcon = (outcome: string) => {
+    if (outcome === "booked" || outcome === "won") return <CheckCircle2 className="w-4 h-4 text-emerald-600" />;
+    if (outcome === "lost") return <XCircle className="w-4 h-4 text-red-600" />;
+    return <Pause className="w-4 h-4 text-amber-600" />;
+  };
+
   const renderHistory = () => (
     <div className="space-y-4 md:space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl md:text-2xl font-bold">Session History</h2>
-          <p className="text-xs md:text-sm text-muted-foreground">Your past roleplay sessions</p>
+          <h2 className="text-xl md:text-2xl font-bold">Score History</h2>
+          <p className="text-xs md:text-sm text-muted-foreground">Performance records for all reps</p>
         </div>
         <Button variant="ghost" onClick={() => setView("dashboard")}>Back</Button>
       </div>
-      {sessions.length === 0 ? (
+
+      {savedScores.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center">
-            <BarChart3 className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-            <h3 className="font-semibold mb-1">No sessions yet</h3>
-            <p className="text-sm text-muted-foreground mb-4">Start your first roleplay session to see history here.</p>
+            <Award className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+            <h3 className="font-semibold mb-1">No scores recorded yet</h3>
+            <p className="text-sm text-muted-foreground mb-4">Complete a roleplay session to see your score here.</p>
             <Button onClick={() => setView("select")} className="gap-2"><Play className="w-4 h-4" /> Start Roleplay</Button>
           </CardContent>
         </Card>
       ) : (
         <div className="space-y-3">
-          {sessions.map((session, i) => (
-            <motion.div key={session.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 * i }}>
+          {savedScores.map((record, i) => (
+            <motion.div key={record.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.04 * i }}>
               <Card>
                 <CardContent className="p-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                        session.outcome === "won" ? "bg-emerald-100" :
-                        session.outcome === "lost" ? "bg-red-100" : "bg-amber-100"
-                      }`}>
-                        {session.outcome === "won" ? <CheckCircle2 className="w-5 h-5 text-emerald-600" /> :
-                         session.outcome === "lost" ? <XCircle className="w-5 h-5 text-red-600" /> :
-                         <Pause className="w-5 h-5 text-amber-600" />}
+                  <div className="flex items-start gap-3">
+                    <Badge className={`text-lg font-bold px-3 py-1 border shrink-0 ${gradeColor(record.grade)}`}>{record.grade}</Badge>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div>
+                          <span className="font-semibold text-sm">{record.userName}</span>
+                          <span className="text-muted-foreground text-xs mx-1">vs</span>
+                          <span className="text-sm">{record.personaName}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          {outcomeIcon(record.outcome)}
+                          <span className="capitalize">{record.outcome}</span>
+                          <span>·</span>
+                          <span>{new Date(record.date).toLocaleDateString()}</span>
+                          {record.duration > 0 && <><span>·</span><span>{formatTime(record.duration)}</span></>}
+                        </div>
                       </div>
-                      <div>
-                        <div className="font-medium text-sm">{session.personaId}</div>
-                        <div className="text-xs text-muted-foreground">{new Date(session.createdAt).toLocaleDateString()} · {formatTime(session.duration)}</div>
+                      <div className="grid grid-cols-4 gap-2 mt-2">
+                        {[
+                          { label: "Rapport", val: record.rapport },
+                          { label: "Discovery", val: record.discovery },
+                          { label: "Objections", val: record.objectionHandling },
+                          { label: "Closing", val: record.closing },
+                        ].map(({ label, val }) => (
+                          <div key={label} className="text-center">
+                            <div className="text-xs text-muted-foreground">{label}</div>
+                            <div className={`text-sm font-bold ${val >= 70 ? "text-emerald-600" : val >= 50 ? "text-amber-600" : "text-red-600"}`}>{val}</div>
+                          </div>
+                        ))}
                       </div>
+                      {record.summary && (
+                        <p className="text-xs text-muted-foreground mt-1.5 line-clamp-2">{record.summary}</p>
+                      )}
                     </div>
-                    <Badge variant={session.status === "completed" ? "default" : "secondary"}>
-                      {session.status}
-                    </Badge>
                   </div>
                 </CardContent>
               </Card>
@@ -1752,6 +2309,11 @@ export default function Home() {
                   <BarChart3 className="w-3.5 h-3.5" /> History
                 </Button>
               </>
+            )}
+            {userName && (
+              <span className="text-xs text-muted-foreground font-medium hidden sm:inline">
+                {userName}
+              </span>
             )}
             <Button variant="ghost" size="sm" onClick={handleLogout} className="gap-1 text-xs text-muted-foreground">
               <LogOut className="w-3.5 h-3.5" /> Exit

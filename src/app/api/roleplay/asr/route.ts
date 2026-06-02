@@ -2,8 +2,26 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-// Retry helper with exponential backoff
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2, baseDelay = 1000): Promise<T> {
+const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
+const REQUEST_TIMEOUT_MS = 15_000;
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutId: NodeJS.Timeout | null = null;
+
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 800): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -12,7 +30,10 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2, baseDelay = 10
       lastError = err;
       if (attempt < maxRetries) {
         const delay = baseDelay * Math.pow(2, attempt);
-        console.warn(`[asr] Attempt ${attempt + 1} failed, retrying in ${delay}ms...`, err instanceof Error ? err.message : err);
+        console.warn(
+          `[asr] Attempt ${attempt + 1} failed, retrying in ${delay}ms...`,
+          err instanceof Error ? err.message : err
+        );
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -20,41 +41,63 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2, baseDelay = 10
   throw lastError;
 }
 
-async function callZaiASR(audioBase64: string): Promise<string> {
+async function callGroqASR(audioBase64: string, mimeType = "audio/webm"): Promise<string> {
+  if (!GROQ_API_KEY) throw new Error("GROQ_API_KEY not configured");
+
   return withRetry(async () => {
-    const ZAI = (await import("z-ai-web-dev-sdk")).default;
-    const zai = await ZAI.create();
+    const audioBuffer = Buffer.from(audioBase64, "base64");
+    const ext = mimeType.includes("mp4") ? "mp4" : mimeType.includes("ogg") ? "ogg" : "webm";
+    const blob = new Blob([audioBuffer], { type: mimeType });
 
-    const response = await zai.audio.asr.create({
-      file_base64: audioBase64,
-    });
+    const formData = new FormData();
+    formData.append("file", blob, `audio.${ext}`);
+    formData.append("model", "whisper-large-v3-turbo");
+    formData.append("response_format", "json");
+    formData.append("language", "en");
 
-    return response.text || "";
-  }, 2, 1500);
+    const response = await withTimeout(
+      fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${GROQ_API_KEY}`,
+        },
+        body: formData,
+      }),
+      REQUEST_TIMEOUT_MS,
+      "Groq ASR request"
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Groq ASR failed (${response.status}): ${errorBody}`);
+    }
+
+    const result = await response.json();
+    return result.text || "";
+  });
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const { audio } = await req.json();
+    const { audio, mimeType } = await req.json();
 
     if (!audio) {
       return NextResponse.json({ error: "Audio data is required" }, { status: 400 });
     }
 
-    // Use z-ai-web-dev-sdk with retry for cold start
     let transcript = "";
 
     try {
-      transcript = await callZaiASR(audio);
-    } catch (zaiError) {
-      console.error("[asr] ASR failed after retries:", zaiError instanceof Error ? zaiError.message : zaiError);
+      transcript = await callGroqASR(audio, mimeType || "audio/webm");
+    } catch (err) {
+      console.error("[asr] Groq ASR failed:", err instanceof Error ? err.message : err);
       throw new Error("Speech recognition failed - service unavailable");
     }
 
     return NextResponse.json({
       success: true,
       text: transcript,
-      provider: "zai",
+      provider: "groq-whisper",
     });
   } catch (error) {
     console.error("[asr] Error:", error);
