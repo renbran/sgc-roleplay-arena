@@ -1,0 +1,13 @@
+{
+  "framework": "nextjs",
+  "functions": {
+    "src/app/api/roleplay/score/route.ts": { "maxDuration": 45 },
+    "src/app/api/roleplay/tts/route.ts": { "maxDuration": 10 },
+    "src/app/api/roleplay/chat/route.ts": { "maxDuration": 10 },
+    "src/app/api/roleplay/asr/route.ts": { "maxDuration": 10 },
+    "src/app/api/roleplay/token/route.ts": { "maxDuration": 10 },
+    "src/app/api/sessions/route.ts": { "maxDuration": 10 },
+    "src/app/api/sessions/feedback/route.ts": { "maxDuration": 10 }
+  },
+  "regions": ["iad1"]
+}
