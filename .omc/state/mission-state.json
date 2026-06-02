@@ -1,0 +1,53 @@
+{
+  "updatedAt": "2026-06-02T09:32:18.726Z",
+  "missions": [
+    {
+      "id": "session:52283ffb-6dbb-40ca-8dba-5934cd0f3ec9:none",
+      "source": "session",
+      "name": "none",
+      "objective": "Session mission",
+      "createdAt": "2026-06-02T09:30:39.864Z",
+      "updatedAt": "2026-06-02T09:32:18.726Z",
+      "status": "done",
+      "workerCount": 1,
+      "taskCounts": {
+        "total": 1,
+        "pending": 0,
+        "blocked": 0,
+        "inProgress": 0,
+        "completed": 1,
+        "failed": 0
+      },
+      "agents": [
+        {
+          "name": "feature-dev:code-explorer:a7d9716",
+          "role": "feature-dev:code-explorer",
+          "ownership": "a7d9716d846d21122",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-06-02T09:32:18.726Z"
+        }
+      ],
+      "timeline": [
+        {
+          "id": "session-start:a7d9716d846d21122:2026-06-02T09:30:39.864Z",
+          "at": "2026-06-02T09:30:39.864Z",
+          "kind": "update",
+          "agent": "feature-dev:code-explorer:a7d9716",
+          "detail": "started feature-dev:code-explorer:a7d9716",
+          "sourceKey": "session-start:a7d9716d846d21122"
+        },
+        {
+          "id": "session-stop:a7d9716d846d21122:2026-06-02T09:32:18.726Z",
+          "at": "2026-06-02T09:32:18.726Z",
+          "kind": "completion",
+          "agent": "feature-dev:code-explorer:a7d9716",
+          "detail": "completed",
+          "sourceKey": "session-stop:a7d9716d846d21122"
+        }
+      ]
+    }
+  ]
+}

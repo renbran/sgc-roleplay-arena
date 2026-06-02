@@ -47,7 +47,7 @@
     "runtime": null
   },
   "build": {
-    "buildCommand": "npm run build",
+    "buildCommand": "cd \"D:\\01_WORK_PROJECTS\\Roleplay\" && npx tsc --noEmit --skipLibCheck 2>&1 | head -30",
     "testCommand": null,
     "lintCommand": "npm run lint",
     "devCommand": "npm run dev",
@@ -211,10 +211,52 @@
   },
   "hotPaths": [
     {
+      "path": "src\\lib\\personas\\index.ts",
+      "accessCount": 19,
+      "lastAccessed": 1780392650456,
+      "type": "file"
+    },
+    {
+      "path": "src\\app\\api\\roleplay\\chat\\route.ts",
+      "accessCount": 3,
+      "lastAccessed": 1780394249063,
+      "type": "file"
+    },
+    {
       "path": "CLAUDE.md",
       "accessCount": 1,
       "lastAccessed": 1780387670380,
       "type": "file"
+    },
+    {
+      "path": "C:\\Users\\branm\\.claude-code\\projects\\D--01-WORK-PROJECTS-Roleplay\\52283ffb-6dbb-40ca-8dba-5934cd0f3ec9\\tool-results\\bub8r09hv.txt",
+      "accessCount": 1,
+      "lastAccessed": 1780387952295,
+      "type": "file"
+    },
+    {
+      "path": "C:\\Users\\branm\\.claude-code\\projects\\D--01-WORK-PROJECTS-Roleplay\\52283ffb-6dbb-40ca-8dba-5934cd0f3ec9\\tool-results\\bj0bs1n5x.txt",
+      "accessCount": 1,
+      "lastAccessed": 1780387952653,
+      "type": "file"
+    },
+    {
+      "path": "vercel.json",
+      "accessCount": 1,
+      "lastAccessed": 1780391265452,
+      "type": "file"
+    },
+    {
+      "path": "src\\app\\api\\roleplay\\score\\route.ts",
+      "accessCount": 1,
+      "lastAccessed": 1780392644836,
+      "type": "file"
+    },
+    {
+      "path": "src\\app\\page.tsx",
+      "accessCount": 1,
+      "lastAccessed": 1780392651742,
+      "type": "directory"
     }
   ],
   "userDirectives": []

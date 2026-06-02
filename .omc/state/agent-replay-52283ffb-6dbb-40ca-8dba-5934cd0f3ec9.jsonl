@@ -1,2 +1,8 @@
 {"t":0,"agent":"a2ed500","agent_type":"unknown","event":"agent_stop","success":true}
 {"t":0,"agent":"a5a7911","agent_type":"unknown","event":"agent_stop","success":true}
+{"t":0,"agent":"a534ab6","agent_type":"unknown","event":"agent_stop","success":true}
+{"t":0,"agent":"a7930ae","agent_type":"unknown","event":"agent_stop","success":true}
+{"t":0,"agent":"a4e4cf4","agent_type":"unknown","event":"agent_stop","success":true}
+{"t":0,"agent":"a1304de","agent_type":"unknown","event":"agent_stop","success":true}
+{"t":0,"agent":"a7d9716","agent_type":"feature-dev:code-explorer","event":"agent_start","parent_mode":"none"}
+{"t":0,"agent":"a7d9716","agent_type":"feature-dev:code-explorer","event":"agent_stop","success":true,"duration_ms":98862}

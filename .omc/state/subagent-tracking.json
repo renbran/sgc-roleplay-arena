@@ -1,7 +1,17 @@
 {
-  "agents": [],
-  "total_spawned": 0,
-  "total_completed": 0,
+  "agents": [
+    {
+      "agent_id": "a7d9716d846d21122",
+      "agent_type": "feature-dev:code-explorer",
+      "started_at": "2026-06-02T09:30:39.864Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-06-02T09:32:18.726Z",
+      "duration_ms": 98862
+    }
+  ],
+  "total_spawned": 1,
+  "total_completed": 1,
   "total_failed": 0,
-  "last_updated": "2026-06-02T08:10:32.626Z"
+  "last_updated": "2026-06-02T09:32:18.835Z"
 }
