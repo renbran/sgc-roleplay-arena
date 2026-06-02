@@ -185,6 +185,8 @@ export default function Home() {
   const ttsSourceRef = useRef<AudioBufferSourceNode | null>(null);
   // Ref for latest playTTS to avoid stale closures in setTimeout
   const playTTSRef = useRef<((text: string, messageIdx: number) => Promise<void>) | undefined>(undefined);
+  const startRecordingRef = useRef<(() => Promise<void>) | undefined>(undefined);
+  const shouldResumeRecordingAfterTTSRef = useRef(false);
   // Refs for recording guard conditions to avoid stale closures
   const isAudioPlayingRef = useRef(false);
   const playingMessageIdxRef = useRef<number | null>(null);
@@ -200,7 +202,6 @@ export default function Home() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const vadIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const silenceStartRef = useRef<number>(0);
   const recordingStartRef = useRef<number>(0);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isStoppingRef = useRef(false);
@@ -325,6 +326,7 @@ export default function Home() {
     setIsAudioPlaying(false);
     playingMessageIdxRef.current = null;
     isAudioPlayingRef.current = false;
+    shouldResumeRecordingAfterTTSRef.current = false;
     setTtsLoading(null);
   }, []);
 
@@ -340,8 +342,10 @@ export default function Home() {
       return;
     }
 
-    // Stop any current audio
+    // Stop any current audio, but preserve pending auto-listen intent for this playback
+    const resumeAfterPlayback = shouldResumeRecordingAfterTTSRef.current;
     stopTTS();
+    shouldResumeRecordingAfterTTSRef.current = resumeAfterPlayback;
     setTtsLoading(messageIdx);
     setTtsError(null);
 
@@ -432,25 +436,34 @@ export default function Home() {
       isAudioPlayingRef.current = true;
       setTtsLoading(null);
 
-      // Safety timeout: ensure refs get reset even if onended doesn't fire
-      const audioDuration = audioBuffer.duration * 1000 + 500;
-      const safetyTimer = setTimeout(() => {
-        if (playingMessageIdxRef.current === messageIdx) {
-          setPlayingMessageIdx(null);
-          setIsAudioPlaying(false);
-          playingMessageIdxRef.current = null;
-          isAudioPlayingRef.current = false;
-          ttsSourceRef.current = null;
-        }
-      }, audioDuration);
-
-      source.onended = () => {
-        clearTimeout(safetyTimer);
+      const finishPlayback = () => {
         setPlayingMessageIdx(null);
         setIsAudioPlaying(false);
         playingMessageIdxRef.current = null;
         isAudioPlayingRef.current = false;
         ttsSourceRef.current = null;
+
+        if (shouldResumeRecordingAfterTTSRef.current) {
+          shouldResumeRecordingAfterTTSRef.current = false;
+          setTimeout(() => {
+            if (startRecordingRef.current) {
+              startRecordingRef.current();
+            }
+          }, 250);
+        }
+      };
+
+      // Safety timeout: ensure refs get reset even if onended doesn't fire
+      const audioDuration = audioBuffer.duration * 1000 + 500;
+      const safetyTimer = setTimeout(() => {
+        if (playingMessageIdxRef.current === messageIdx) {
+          finishPlayback();
+        }
+      }, audioDuration);
+
+      source.onended = () => {
+        clearTimeout(safetyTimer);
+        finishPlayback();
       };
 
       source.start(0);
@@ -462,6 +475,15 @@ export default function Home() {
         setTtsError('Tap again to play audio');
       } else {
         setTtsError('Voice unavailable');
+      }
+
+      if (shouldResumeRecordingAfterTTSRef.current) {
+        shouldResumeRecordingAfterTTSRef.current = false;
+        setTimeout(() => {
+          if (startRecordingRef.current) {
+            startRecordingRef.current();
+          }
+        }, 250);
       }
     }
   }, [playingMessageIdx, stopTTS, selectedPersona]);
@@ -487,7 +509,7 @@ export default function Home() {
   const sendChatMessageWithText = useCallback(async (text: string, fromVoice = false) => {
     if (!text.trim() || !selectedPersona || isChatLoadingRef.current) return;
     const userMsg = text.trim();
-    if (!fromVoice) setInputMode("text");
+    if (!fromVoice && mode !== "voice") setInputMode("text");
     setChatMessages(prev => [...prev, { role: "user", content: userMsg, timestamp: Date.now() }]);
     setIsChatLoading(true);
     isChatLoadingRef.current = true;
@@ -507,6 +529,8 @@ export default function Home() {
           setSessionBooked(true);
           setEndOutcome("won");
         }
+
+        const shouldContinueVoiceTurn = mode === "voice" && !data.booked;
         let autoPlayIdx: number | null = null;
         setChatMessages(prev => {
           const newMessages: ChatMessage[] = [...prev, { role: "assistant" as const, content: String(data.response), timestamp: Date.now() }];
@@ -515,12 +539,25 @@ export default function Home() {
           }
           return newMessages;
         });
+
+        if (shouldContinueVoiceTurn) {
+          shouldResumeRecordingAfterTTSRef.current = true;
+        }
+
         // Fire auto-voice outside the updater to avoid double-invoke in React Strict Mode
         if (autoPlayIdx !== null) {
           const idx = autoPlayIdx;
           setTimeout(() => {
             if (playTTSRef.current) {
               playTTSRef.current(data.response, idx);
+            }
+          }, 300);
+        } else if (shouldContinueVoiceTurn) {
+          // If autoplay is blocked/unavailable, continue turn-taking by listening again.
+          shouldResumeRecordingAfterTTSRef.current = false;
+          setTimeout(() => {
+            if (startRecordingRef.current) {
+              startRecordingRef.current();
             }
           }, 300);
         }
@@ -532,16 +569,11 @@ export default function Home() {
     }
     setIsChatLoading(false);
     isChatLoadingRef.current = false;
-  }, [selectedPersona, chatSessionId, autoVoice, userName]);
+  }, [selectedPersona, chatSessionId, autoVoice, userName, mode]);
 
-  // ─── Voice Activity Detection (VAD) ─────────────────────────────────────────
+  // ─── Voice Recording (manual stop) ──────────────────────────────────────────
 
-  const SILENCE_THRESHOLD = 10;       // balanced threshold for normal speech across laptop/phone mics
-  const SILENCE_DURATION = 2200;      // keep turns responsive and avoid long dead-air waits
-  const MIN_RECORDING_DURATION = 1500;
-  const MAX_RECORDING_DURATION = 300000;
-  const SPEECH_DETECTION_INTERVAL = 150;
-  const SUSTAINED_SPEECH_MS = 300;    // short sustained speech gate to avoid false-positive ambient triggers
+  const MIN_RECORDING_DURATION = 800;
 
   const cleanupRecording = useCallback(() => {
     if (vadIntervalRef.current) {
@@ -687,7 +719,6 @@ export default function Home() {
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
       isStoppingRef.current = false;
-      silenceStartRef.current = 0;
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -704,76 +735,12 @@ export default function Home() {
         processRecordedAudio();
       };
 
-      try {
-        const audioCtx = new AudioContext();
-        audioContextRef.current = audioCtx;
-        const source = audioCtx.createMediaStreamSource(stream);
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 512;
-        analyser.smoothingTimeConstant = 0.8;
-        source.connect(analyser);
-        analyserRef.current = analyser;
-
-        const dataArray = new Uint8Array(analyser.fftSize);
-        let speechStartTime = 0;   // when we first crossed the threshold
-        let silenceArmed = false;  // true once sustained speech is confirmed
-
-        vadIntervalRef.current = setInterval(() => {
-          if (!analyserRef.current || isStoppingRef.current) {
-            if (vadIntervalRef.current) clearInterval(vadIntervalRef.current);
-            return;
-          }
-
-          analyserRef.current.getByteTimeDomainData(dataArray);
-
-          let sum = 0;
-          for (let i = 0; i < dataArray.length; i++) {
-            const val = (dataArray[i] - 128) / 128;
-            sum += val * val;
-          }
-          const rms = Math.sqrt(sum / dataArray.length) * 128;
-
-          const now = Date.now();
-          const elapsed = now - recordingStartRef.current;
-
-          if (rms > SILENCE_THRESHOLD) {
-            // Track how long we've been above threshold (sustained speech guard)
-            if (speechStartTime === 0) speechStartTime = now;
-            if (!silenceArmed && (now - speechStartTime) >= SUSTAINED_SPEECH_MS) {
-              silenceArmed = true;
-            }
-            silenceStartRef.current = 0; // reset silence timer whenever voice is detected
-          } else {
-            speechStartTime = 0; // reset sustained-speech counter on any dip
-            if (silenceArmed && silenceStartRef.current === 0) {
-              silenceStartRef.current = now; // start silence countdown
-            }
-          }
-
-          // Only auto-stop after sustained speech was confirmed + 5s of silence
-          if (silenceArmed && silenceStartRef.current > 0 && (now - silenceStartRef.current) > SILENCE_DURATION) {
-            if (elapsed > MIN_RECORDING_DURATION) {
-              stopRecording();
-            }
-          }
-
-          if (elapsed > MAX_RECORDING_DURATION) {
-            stopRecording();
-          }
-        }, SPEECH_DETECTION_INTERVAL);
-      } catch (vadErr) {
-        console.warn("VAD setup failed, using timer-only mode:", vadErr);
-        setTimeout(() => {
-          if (mediaRecorderRef.current?.state === "recording") {
-            stopRecording();
-          }
-        }, MAX_RECORDING_DURATION);
-      }
 
       mediaRecorder.start(250);
       recordingStartRef.current = Date.now();
       setIsRecording(true);
       setRecordingDuration(0);
+      setVoiceStatus("Recording live. Tap the mic again to stop and transcribe.");
 
       recordingTimerRef.current = setInterval(() => {
         setRecordingDuration(Math.round((Date.now() - recordingStartRef.current) / 1000));
@@ -785,6 +752,10 @@ export default function Home() {
       setIsRecording(false);
     }
   }, [isRecording, stopRecording, processRecordedAudio]);
+
+  useEffect(() => {
+    startRecordingRef.current = startRecording;
+  }, [startRecording]);
 
   // ─── Data Fetching ──────────────────────────────────────────────────────────
 
@@ -920,6 +891,7 @@ export default function Home() {
     setSessionStartTime(Date.now());
     setShowEndDialog(false);
     setAutoVoice(true);
+    audioUnlockedRef.current = true;
     const sid = `voice-${persona.id}-${Date.now()}`;
     setChatSessionId(sid);
     setSessionId(sid);
@@ -929,8 +901,13 @@ export default function Home() {
       { role: "system", content: `Voice call with ${persona.name}${userName ? ` — rep: ${userName}` : ""}. Tap the mic button to speak, or type your message.`, timestamp: Date.now() },
       openingMsg,
     ]);
-    // Don't auto-play TTS on start - warmup may not be complete
-    // User can click the speaker button on the opening message
+    // Auto-play opening line and then automatically open mic for continuous turn-taking.
+    shouldResumeRecordingAfterTTSRef.current = true;
+    setTimeout(() => {
+      if (playTTSRef.current) {
+        playTTSRef.current(openingMsg.content, 1);
+      }
+    }, 400);
   };
 
   const sendChatMessage = async () => {
@@ -959,6 +936,7 @@ export default function Home() {
       } catch { /* ignore */ }
     }
 
+    shouldResumeRecordingAfterTTSRef.current = false;
     setRoleplayStatus("ended");
     fetchSessions();
   };
@@ -1582,7 +1560,7 @@ export default function Home() {
             ) : (
               <>
                 <Mic className="w-4 h-4 text-slate-500" />
-                <span className="text-xs font-medium text-slate-600">Tap mic to speak</span>
+                <span className="text-xs font-medium text-slate-600">Tap mic to start, tap again to stop and transcribe</span>
               </>
             )}
           </div>
@@ -1774,7 +1752,7 @@ export default function Home() {
           {isMobile && effectiveInputMode === "voice" && (
             <div className="flex-1 flex items-center justify-center">
               <span className="text-xs text-muted-foreground">
-                {isRecording ? `Recording · ${recordingDuration}s` : voiceStatus || (isAudioPlaying ? "Listening..." : "Tap mic to speak")}
+                {isRecording ? `Recording · ${recordingDuration}s` : voiceStatus || (isAudioPlaying ? "Listening..." : "Tap mic to start, tap again to stop and transcribe")}
               </span>
             </div>
           )}
