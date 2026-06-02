@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || "";
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const REQUEST_TIMEOUT_MS = 15_000;
 
@@ -39,6 +40,41 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 80
     }
   }
   throw lastError;
+}
+
+async function callDeepgramASR(audioBase64: string, mimeType = "audio/webm"): Promise<string> {
+  if (!DEEPGRAM_API_KEY) throw new Error("DEEPGRAM_API_KEY not configured");
+
+  return withRetry(async () => {
+    const audioBuffer = Buffer.from(audioBase64, "base64");
+
+    const response = await withTimeout(
+      fetch("https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&language=en", {
+        method: "POST",
+        headers: {
+          Authorization: `Token ${DEEPGRAM_API_KEY}`,
+          "Content-Type": mimeType,
+        },
+        body: audioBuffer,
+      }),
+      REQUEST_TIMEOUT_MS,
+      "Deepgram ASR request"
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Deepgram ASR failed (${response.status}): ${errorBody}`);
+    }
+
+    const result = await response.json();
+    const transcript = result?.results?.channels?.[0]?.alternatives?.[0]?.transcript || "";
+    
+    if (!transcript || transcript.trim().length === 0) {
+      throw new Error("Deepgram returned empty transcript");
+    }
+    
+    return transcript;
+  });
 }
 
 async function callGroqASR(audioBase64: string, mimeType = "audio/webm"): Promise<string> {
@@ -86,18 +122,40 @@ export async function POST(req: NextRequest) {
     }
 
     let transcript = "";
+    let provider = "";
 
-    try {
-      transcript = await callGroqASR(audio, mimeType || "audio/webm");
-    } catch (err) {
-      console.error("[asr] Groq ASR failed:", err instanceof Error ? err.message : err);
-      throw new Error("Speech recognition failed - service unavailable");
+    // Try Deepgram first (primary provider)
+    if (DEEPGRAM_API_KEY) {
+      try {
+        transcript = await callDeepgramASR(audio, mimeType || "audio/webm");
+        provider = "deepgram-nova-2";
+        console.log("[asr] Deepgram success:", transcript.substring(0, 50));
+      } catch (err) {
+        console.error("[asr] Deepgram failed:", err instanceof Error ? err.message : err);
+        // Fall through to Groq
+      }
+    }
+
+    // Fallback to Groq if Deepgram failed or not configured
+    if (!transcript && GROQ_API_KEY) {
+      try {
+        transcript = await callGroqASR(audio, mimeType || "audio/webm");
+        provider = "groq-whisper";
+        console.log("[asr] Groq fallback success:", transcript.substring(0, 50));
+      } catch (err) {
+        console.error("[asr] Groq fallback failed:", err instanceof Error ? err.message : err);
+        throw new Error("Speech recognition failed - both services unavailable");
+      }
+    }
+
+    if (!transcript) {
+      throw new Error("No ASR provider configured or all providers failed");
     }
 
     return NextResponse.json({
       success: true,
       text: transcript,
-      provider: "groq-whisper",
+      provider,
     });
   } catch (error) {
     console.error("[asr] Error:", error);
