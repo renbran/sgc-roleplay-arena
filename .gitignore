@@ -57,3 +57,9 @@ server.log
 # Skills directory
 /skills/
 .vercel
+
+# opencode internal state
+.omc/
+
+# token optimizer data
+token-optimizer/

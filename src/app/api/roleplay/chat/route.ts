@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { getPersona } from "@/lib/personas";
 import type { Persona } from "@/lib/personas";
+import {
+  buildMemoryContext,
+  extractMemories,
+  storeMemories,
+} from "@/lib/memory";
 
 // In-memory: lost on serverless cold start. For production: persist to Session.notes in DB.
 const conversations = new Map<string, Array<{ role: string; content: string }>>();
@@ -358,6 +363,21 @@ export async function POST(request: Request) {
         : { ...m }
     );
 
+    // ── Cross-session memory injection (mem0) ─────────────────────────────────
+    if (userName) {
+      try {
+        const memoryCtx = await buildMemoryContext(userName, personaId, persona.name);
+        if (memoryCtx) {
+          enhancedHistory[0] = {
+            ...enhancedHistory[0],
+            content: enhancedHistory[0].content + memoryCtx,
+          };
+        }
+      } catch (err) {
+        console.warn("[mem0] Failed to inject memory context:", err);
+      }
+    }
+
     // Keep context window manageable: system message + last 41 messages
     const callHistory = enhancedHistory.length > 42
       ? [enhancedHistory[0], ...enhancedHistory.slice(-41)]
@@ -384,6 +404,23 @@ export async function POST(request: Request) {
       personaMood: newMood,
     });
 
+    // ── Store extracted memories (mem0) — fire-and-forget ─────────────────────
+    if (userName) {
+      const memoryEntries = extractMemories(message, aiResponse, personaId, persona.name);
+      if (memoryEntries.length > 0) {
+        storeMemories(memoryEntries, {
+          userId: userName,
+          personaId,
+          sessionId: sessionId || personaId,
+        }).catch((err) => console.warn("[mem0] async store failed:", err));
+      }
+    }
+
+    // Count extracted memories for observability
+    const storedMemoryCount = userName
+      ? extractMemories(message, aiResponse, personaId, persona.name).length
+      : 0;
+
     return NextResponse.json({
       success: true,
       response: aiResponse,
@@ -391,6 +428,7 @@ export async function POST(request: Request) {
       provider,
       stage,
       booked: detectBooking(aiResponse),
+      memory: storedMemoryCount > 0 ? { stored: storedMemoryCount } : undefined,
     });
   } catch (error: unknown) {
     return NextResponse.json(

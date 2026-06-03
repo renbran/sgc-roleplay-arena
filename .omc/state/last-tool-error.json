@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd \\\"D:\\\\01_WORK_PROJECTS\\\\Roleplay\\\" && npx tsc --noEmit --skipLibCheck 2>&1\",\"description\":\"TypeScript check on updated chat route\"}",
-  "error": "Exit code 2\nexamples/websocket/frontend.tsx(4,20): error TS2307: Cannot find module 'socket.io-client' or its corresponding type declarations.\r\nexamples/websocket/server.ts(2,24): error TS2307: Cannot find module 'socket.io' or its corresponding type declarations.",
-  "timestamp": "2026-06-02T09:57:49.083Z",
-  "retry_count": 1
-}
