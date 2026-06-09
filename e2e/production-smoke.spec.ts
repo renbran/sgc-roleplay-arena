@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 const BASE = process.env.PROD_BASE_URL || "https://roleplay-arena-psi.vercel.app";
-const PASSWORD = process.env.PROD_APP_PASSWORD || "SGC2025";
+const PASSWORD = process.env.PROD_APP_PASSWORD || "SGCTECH2025";
 
 test.describe("Production smoke tests", () => {
   test("homepage loads successfully", async ({ page }) => {

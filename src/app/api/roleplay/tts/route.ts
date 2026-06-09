@@ -139,7 +139,8 @@ function sanitizeTtsText(raw: string): string {
   let text = raw;
 
   // 1. Strip asterisk-wrapped emotions/actions: *sighs*, *chuckles softly*, *nods*
-  text = text.replace(/\*[^*]+\*/g, ' ');
+  //    Negative lookarounds prevent matching markdown **bold** or ***italic***
+  text = text.replace(/(?<!\*)\*[^*]+\*(?!\*)/g, ' ');
 
   // 2. Strip bracketed stage directions: [pause], [STAGE ENFORCEMENT], [clears throat]
   text = text.replace(/\[[^\]]*\]/g, ' ');
