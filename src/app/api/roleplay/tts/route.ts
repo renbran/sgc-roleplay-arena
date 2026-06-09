@@ -119,6 +119,41 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2, baseDelay = 10
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TEXT SANITIZER — Strip emotional markers before TTS rendering
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Persona prompts and LLM responses contain stage directions and emotional
+// markers like *sighs*, *chuckles*, [pause], etc. Deepgram Aura-2 (and ZAI)
+// read these literally as "star sighs star" instead of performing the emotion.
+// This sanitizer strips them so the TTS engine reads only the actual dialogue.
+//
+// Rules:
+//   1. Strip *...* — asterisk-wrapped emotions/actions (e.g., *sighs deeply*)
+//   2. Strip [...] — bracketed stage directions (e.g., [pause], [STAGE ENFORCEMENT])
+//   3. Normalize 3+ consecutive dots → "..."" (single pause token)
+//   4. Normalize multiple spaces → single space
+//   5. Strip leading/trailing whitespace
+//   6. Interjections (Hmm, Ah, Oh, Mm-hmm) and foreign phrases are KEPT — they're speech
+
+function sanitizeTtsText(raw: string): string {
+  let text = raw;
+
+  // 1. Strip asterisk-wrapped emotions/actions: *sighs*, *chuckles softly*, *nods*
+  text = text.replace(/\*[^*]+\*/g, ' ');
+
+  // 2. Strip bracketed stage directions: [pause], [STAGE ENFORCEMENT], [clears throat]
+  text = text.replace(/\[[^\]]*\]/g, ' ');
+
+  // 3. Normalize ellipsis (3+ dots) to a single triple-dot token
+  text = text.replace(/\.{3,}/g, '...');
+
+  // 4. Normalize whitespace: collapse multiple spaces, trim
+  text = text.replace(/\s{2,}/g, ' ').trim();
+
+  return text;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // DEEPGRAM TTS — Primary engine with 11 distinct voice presets
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -302,7 +337,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Text is required" }, { status: 400 });
     }
 
-    const truncatedText = text.slice(0, 2000);
+    const rawText = text.slice(0, 2000);
+    const truncatedText = sanitizeTtsText(rawText);
     let audioBuffer: Buffer;
     let usedProvider = "deepgram";
 
