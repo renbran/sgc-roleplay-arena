@@ -243,7 +243,32 @@ export default function Home() {
     } catch { /* corrupt data — ignore */ }
   }, []);
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
+    // Try server-side verification first
+    try {
+      const res = await fetch("/api/auth/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: authPassword }),
+      });
+      const data = await res.json();
+      if (data.verified) {
+        localStorage.setItem(AUTH_STORAGE_KEY, "true");
+        setAuthError("");
+        const storedName = localStorage.getItem(USER_NAME_STORAGE_KEY);
+        if (storedName) {
+          setUserName(storedName);
+          setIsAuthenticated(true);
+        } else {
+          setShowNameStep(true);
+        }
+        return;
+      }
+    } catch {
+      // API unreachable — fall back to client-side check (dev/offline)
+    }
+
+    // Fallback: client-side check against env var
     if (authPassword === APP_PASSWORD) {
       localStorage.setItem(AUTH_STORAGE_KEY, "true");
       setAuthError("");

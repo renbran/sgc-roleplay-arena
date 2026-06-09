@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   BarChart3, Users, TrendingUp, Award, RefreshCw,
   ChevronDown, ChevronUp, LogOut, Clock, CheckCircle2,
-  XCircle, AlertTriangle,
+  XCircle, AlertTriangle, Key, Save,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -355,6 +355,7 @@ export default function AdminPage() {
   const [sortKey, setSortKey] = useState<SortKey>("avgOverall");
   const [lastRefreshed, setLastRefreshed] = useState<number | null>(null);
   const [secondsAgo, setSecondsAgo] = useState(0);
+  const [passkeyReset, setPasskeyReset] = useState({ newPasskey: "", confirmPasskey: "", status: "", error: "" });
 
   // Check session storage on mount
   useEffect(() => {
@@ -423,6 +424,43 @@ export default function AdminPage() {
       else next.add(userName);
       return next;
     });
+  };
+
+  const handleResetPasskey = async () => {
+    const { newPasskey, confirmPasskey } = passkeyReset;
+    if (!newPasskey || newPasskey.length < 4) {
+      setPasskeyReset((p) => ({ ...p, error: "Passkey must be at least 4 characters." }));
+      return;
+    }
+    if (newPasskey !== confirmPasskey) {
+      setPasskeyReset((p) => ({ ...p, error: "Passkeys do not match." }));
+      return;
+    }
+    setPasskeyReset((p) => ({ ...p, error: "", status: "Resetting..." }));
+    try {
+      const res = await fetch("/api/auth/reset-passkey", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ newPasskey }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPasskeyReset((p) => ({
+          ...p,
+          newPasskey: "",
+          confirmPasskey: "",
+          status: `✅ Passkey updated successfully (via ${data.method}).`,
+          error: "",
+        }));
+      } else {
+        setPasskeyReset((p) => ({ ...p, status: "", error: data.error || "Reset failed." }));
+      }
+    } catch {
+      setPasskeyReset((p) => ({ ...p, status: "", error: "Network error. Is the server running?" }));
+    }
   };
 
   const sortedCandidates = data
@@ -588,6 +626,52 @@ export default function AdminPage() {
                 Grades
               </span>
             </div>
+
+            {/* Passkey Reset */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader className="pb-3">
+                <div className="flex items-center gap-2">
+                  <Key className="w-4 h-4 text-slate-400" />
+                  <CardTitle className="text-sm font-medium text-white">Change App Passkey</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Input
+                      type="password"
+                      placeholder="New passkey (min 4 chars)"
+                      value={passkeyReset.newPasskey}
+                      onChange={e => setPasskeyReset(p => ({ ...p, newPasskey: e.target.value, error: "", status: "" }))}
+                      className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500"
+                    />
+                    <Input
+                      type="password"
+                      placeholder="Confirm new passkey"
+                      value={passkeyReset.confirmPasskey}
+                      onChange={e => setPasskeyReset(p => ({ ...p, confirmPasskey: e.target.value, error: "", status: "" }))}
+                      className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500"
+                    />
+                  </div>
+                  {passkeyReset.error && (
+                    <p className="text-sm text-red-400 flex items-center gap-1">
+                      <XCircle className="w-3.5 h-3.5" /> {passkeyReset.error}
+                    </p>
+                  )}
+                  {passkeyReset.status && (
+                    <p className="text-sm text-emerald-400">{passkeyReset.status}</p>
+                  )}
+                  <Button
+                    onClick={handleResetPasskey}
+                    disabled={!passkeyReset.newPasskey || !passkeyReset.confirmPasskey || passkeyReset.status === "Resetting..."}
+                    className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
+                    size="sm"
+                  >
+                    <Save className="w-4 h-4" /> Update Passkey
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
           </>
         )}
       </main>

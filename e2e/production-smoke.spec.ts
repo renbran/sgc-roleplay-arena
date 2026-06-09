@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
-const BASE = "https://roleplay-arena-psi.vercel.app";
-const PASSWORD = "SGCTECH2025";
+const BASE = process.env.PROD_BASE_URL || "https://roleplay-arena-psi.vercel.app";
+const PASSWORD = process.env.PROD_APP_PASSWORD || "SGC2025";
 
 test.describe("Production smoke tests", () => {
   test("homepage loads successfully", async ({ page }) => {
@@ -16,7 +16,7 @@ test.describe("Production smoke tests", () => {
     
     const passwordInput = page.getByPlaceholder("Enter password");
     await passwordInput.fill(PASSWORD);
-    await page.getByRole("button", { name: "Enter" }).click();
+    await page.getByRole("button", { name: "Access Arena" }).click();
     
     // Should see name step or dashboard
     await expect(page.getByText(/Name|Start Roleplay/)).toBeVisible({ timeout: 8000 });
@@ -44,5 +44,30 @@ test.describe("Production smoke tests", () => {
     expect(personasRes.ok()).toBeTruthy();
     const personas = await personasRes.json();
     expect(personas.length).toBeGreaterThan(0);
+  });
+
+  test("auth verify endpoint works", async ({ request }) => {
+    // Wrong password should return { verified: false }
+    const wrongRes = await request.post(`${BASE}/api/auth/verify`, {
+      data: { password: "wrong-password" },
+    });
+    expect(wrongRes.ok()).toBeTruthy();
+    const wrongData = await wrongRes.json();
+    expect(wrongData.verified).toBe(false);
+
+    // Empty body should return 400
+    const emptyRes = await request.post(`${BASE}/api/auth/verify`, {
+      data: {},
+    });
+    expect(emptyRes.status()).toBe(400);
+  });
+
+  test("reset-passkey rejects unauthorized", async ({ request }) => {
+    const res = await request.post(`${BASE}/api/auth/reset-passkey`, {
+      data: { newPasskey: "test1234" },
+    });
+    expect(res.status()).toBe(401);
+    const data = await res.json();
+    expect(data.success).toBe(false);
   });
 });

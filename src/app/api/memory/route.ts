@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { csrfProtect } from "@/middleware/csrf";
 import {
   getAllMemories,
   deleteUserMemories,
@@ -32,12 +33,21 @@ export async function GET(request: Request) {
       );
     }
 
-    const memories = await getAllMemories(userId, personaId ?? undefined);
+    // Pagination parameters (high confidence – simple numeric parsing)
+  const page = parseInt(searchParams.get('page') || '1', 10);
+  const size = parseInt(searchParams.get('size') || '20', 10);
+  const offset = (page - 1) * size;
+  const allMemories = await getAllMemories(userId, personaId ?? undefined);
+  const memories = allMemories.slice(offset, offset + size);
+
 
     return NextResponse.json({
       success: true,
       userId,
       personaId: personaId ?? null,
+      page,
+      size,
+      totalCount: allMemories.length,
       count: memories.length,
       memories,
     });
@@ -65,6 +75,8 @@ export async function GET(request: Request) {
  *   category  (optional) – e.g. "rep_skill", "preference", "session_fact"
  */
 export async function POST(request: Request) {
+  const csrfResponse = csrfProtect(request);
+  if (csrfResponse) return csrfResponse;
   try {
     const body = await request.json();
     const { userId, personaId, sessionId, memory, category } = body;
@@ -109,6 +121,8 @@ export async function POST(request: Request) {
  *   userId (required) – the rep identifier
  */
 export async function DELETE(request: Request) {
+  const csrfResponse = csrfProtect(request);
+  if (csrfResponse) return csrfResponse;
   try {
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get("userId");

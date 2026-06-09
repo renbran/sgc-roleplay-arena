@@ -448,7 +448,6 @@ test.describe("Navigation and button integrity", () => {
 // A 500 here is a rate-limit false-negative — not an API code bug.
 // We allow one retry with a 10s delay before failing.
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function postWithRetry(req: any, url: string, data: object) {
   let res = await req.post(url, { data });
   if (res.status() === 500) {

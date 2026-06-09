@@ -63,3 +63,22 @@ server.log
 
 # token optimizer data
 token-optimizer/
+VERCEL-ROLEPLAY-SECRETS.md
+
+# Playwright test artifacts
+test-results/
+
+# Go language files (not used in this TS/Next.js project)
+voice/
+
+# Project archive / backup files
+*.tar
+
+# Stale download directory
+download/
+
+# Windows reserved name anomaly
+NUL
+
+# Random workspace screenshots
+Tempopencodeauth-*.png

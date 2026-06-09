@@ -2,7 +2,7 @@
   "name": "nextjs_tailwind_shadcn_ts",
   "version": "0.2.0",
   "private": true,
-  "scripts": {
+  "scripts": {"test": "jest",
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start",
@@ -89,12 +89,15 @@
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "^4",
+    "@types/jest": "^30.0.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "bun-types": "^1.3.4",
     "eslint": "^9",
     "eslint-config-next": "^16.1.1",
+    "jest": "^30.4.2",
     "tailwindcss": "^4",
+    "ts-jest": "^29.4.11",
     "tw-animate-css": "^1.3.5",
     "typescript": "^5"
   }
