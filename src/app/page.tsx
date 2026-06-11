@@ -949,6 +949,13 @@ export default function Home() {
     } catch { /* storage full */ }
   }, [chatMessages, roleplayStatus, selectedPersona, userName, callTimer]);
 
+  // Fetch leaderboard data when view changes to "leaderboard" or filters change
+  useEffect(() => {
+    if (view === "leaderboard") {
+      fetchLeaderboard(lbTimeframe, lbPersonaFilter);
+    }
+  }, [view, fetchLeaderboard, lbTimeframe, lbPersonaFilter]);
+
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
@@ -2423,13 +2430,6 @@ export default function Home() {
       )}
     </div>
   );
-
-  // Fetch leaderboard data when view changes to "leaderboard" or filters change
-  useEffect(() => {
-    if (view === "leaderboard") {
-      fetchLeaderboard(lbTimeframe, lbPersonaFilter);
-    }
-  }, [view, fetchLeaderboard, lbTimeframe, lbPersonaFilter]);
 
   // ─── RENDER: Leaderboard ─────────────────────────────────────────────────────
 
