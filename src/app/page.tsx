@@ -169,6 +169,14 @@ export default function Home() {
   const [autoScore, setAutoScore] = useState<AutoScore | null>(null);
   const [isScoring, setIsScoring] = useState(false);
   const [scoreFailed, setScoreFailed] = useState(false);
+
+  // Lead capture form state (shown after booking)
+  const [showLeadForm, setShowLeadForm] = useState(false);
+  const [leadFormSubmitted, setLeadFormSubmitted] = useState(false);
+  const [leadFormData, setLeadFormData] = useState({ fullName: "", email: "", mobile: "" });
+  const [leadFormLoading, setLeadFormLoading] = useState(false);
+  const [leadFormError, setLeadFormError] = useState<string | null>(null);
+  const [bookingToken, setBookingToken] = useState<string>("");
   const [pendingScoreRecovery, setPendingScoreRecovery] = useState<{
     score: AutoScore; personaId: string; personaName: string;
     userName: string; duration: number; date: string;
@@ -551,8 +559,13 @@ export default function Home() {
           setConversationStage(data.stage);
         }
         if (data.booked) {
-          setSessionBooked(true);
-          setEndOutcome("won");
+          setBookingToken(data.bookingToken || "");
+          if (!leadFormSubmitted) {
+            setShowLeadForm(true);
+          } else {
+            setSessionBooked(true);
+            setEndOutcome("won");
+          }
         }
 
         const shouldContinueVoiceTurn = mode === "voice" && !data.booked;
@@ -595,6 +608,44 @@ export default function Home() {
     setIsChatLoading(false);
     isChatLoadingRef.current = false;
   }, [selectedPersona, chatSessionId, autoVoice, userName, mode]);
+
+  // ─── Lead form submission (post-booking Odoo provisioning) ──────────────────
+
+  const submitLeadForm = useCallback(async () => {
+    if (!leadFormData.fullName.trim() || !leadFormData.email.trim() || !leadFormData.mobile.trim()) {
+      setLeadFormError("All fields are required.");
+      return;
+    }
+    setLeadFormLoading(true);
+    setLeadFormError(null);
+    try {
+      const res = await fetch("/api/booking/provision", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fullName: leadFormData.fullName,
+          email: leadFormData.email,
+          mobile: leadFormData.mobile,
+          personaId: selectedPersona?.id,
+          sessionId: chatSessionId,
+          bookingToken,
+        }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        setLeadFormError(result.error || "Something went wrong. Please try again.");
+      } else {
+        setLeadFormSubmitted(true);
+        setShowLeadForm(false);
+        setSessionBooked(true);
+        setEndOutcome("won");
+      }
+    } catch {
+      setLeadFormError("Network error. Please try again.");
+    } finally {
+      setLeadFormLoading(false);
+    }
+  }, [leadFormData, selectedPersona, chatSessionId, bookingToken]);
 
   // ─── Voice Recording (manual stop) ──────────────────────────────────────────
 
@@ -2343,6 +2394,98 @@ export default function Home() {
           <span className="text-[10px] text-muted-foreground">v1.0</span>
         </div>
       </footer>
+
+      {/* Booking Lead Capture Form */}
+      <Dialog
+        open={showLeadForm}
+        onOpenChange={(open) => {
+          if (!open) {
+            setShowLeadForm(false);
+            setLeadFormSubmitted(true);
+            setSessionBooked(true);
+            setEndOutcome("won");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl">🎉 Congratulations! Meeting Booked</DialogTitle>
+            <DialogDescription>
+              You&apos;ve successfully booked a meeting with{" "}
+              <strong>{selectedPersona?.name}</strong>. Fill in your details to
+              receive your SGC Tech account credentials.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Full Name</label>
+              <Input
+                placeholder="e.g. Renbran Madelo"
+                value={leadFormData.fullName}
+                onChange={(e) =>
+                  setLeadFormData((prev) => ({ ...prev, fullName: e.target.value }))
+                }
+                disabled={leadFormLoading}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Email Address</label>
+              <Input
+                type="email"
+                placeholder="your@email.com"
+                value={leadFormData.email}
+                onChange={(e) =>
+                  setLeadFormData((prev) => ({ ...prev, email: e.target.value }))
+                }
+                disabled={leadFormLoading}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Mobile Number</label>
+              <Input
+                type="tel"
+                placeholder="+971 50 123 4567"
+                value={leadFormData.mobile}
+                onChange={(e) =>
+                  setLeadFormData((prev) => ({ ...prev, mobile: e.target.value }))
+                }
+                disabled={leadFormLoading}
+              />
+            </div>
+            {leadFormError && (
+              <p className="text-sm text-red-600">{leadFormError}</p>
+            )}
+          </div>
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground text-xs"
+              onClick={() => {
+                setShowLeadForm(false);
+                setLeadFormSubmitted(true);
+                setSessionBooked(true);
+                setEndOutcome("won");
+              }}
+              disabled={leadFormLoading}
+            >
+              Skip for now
+            </Button>
+            <Button
+              onClick={submitLeadForm}
+              disabled={
+                leadFormLoading ||
+                !leadFormData.fullName ||
+                !leadFormData.email ||
+                !leadFormData.mobile
+              }
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              {leadFormLoading ? "Submitting..." : "Get My Credentials"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* End Session Dialog */}
       {renderEndDialog()}

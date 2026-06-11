@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createHmac } from "crypto";
 import { getPersona } from "@/lib/personas";
 import type { Persona } from "@/lib/personas";
 import {
@@ -24,6 +25,15 @@ export const dynamic = "force-dynamic";
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY || "";
+const BOOKING_TOKEN_SECRET = process.env.BOOKING_TOKEN_SECRET || "dev-insecure-set-BOOKING_TOKEN_SECRET-in-env";
+
+// Issues a short-lived HMAC token tied to this session. Verified by /api/booking/provision.
+function generateBookingToken(sessionKey: string): string {
+  const payload = `${sessionKey}:${Date.now()}`;
+  const encoded = Buffer.from(payload).toString("base64url");
+  const sig = createHmac("sha256", BOOKING_TOKEN_SECRET).update(encoded).digest("hex");
+  return `${encoded}.${sig}`;
+}
 
 // ─── Stage parameters: vary temp and token budget by stage ───────────────────
 
@@ -513,13 +523,15 @@ export async function POST(request: Request) {
       ? extractMemories(message, aiResponse, personaId, persona.name).length
       : 0;
 
+    const isBooked = detectBooking(aiResponse);
     return NextResponse.json({
       success: true,
       response: aiResponse,
       messageCount: history.length - 1,
       provider,
       stage,
-      booked: detectBooking(aiResponse),
+      booked: isBooked,
+      ...(isBooked ? { bookingToken: generateBookingToken(convKey) } : {}),
       memory: storedMemoryCount > 0 ? { stored: storedMemoryCount } : undefined,
       // Emit hallucination warning to frontend if text was cleaned
       ...(aiResponse !== rawResponse && rawResponse !== "[no response]" ? { sanitized: true } : {}),
