@@ -83,3 +83,6 @@ NUL
 # Random workspace screenshots
 Tempopencodeauth-*.png
 .env
+
+# Local Netlify folder
+.netlify
