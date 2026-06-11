@@ -10,4 +10,4 @@
   package = "@netlify/plugin-nextjs"
 
 [functions]
-  included_files = ["node_modules/.prisma/**/*", "node_modules/@prisma/client/**/*"]
+  included_files = ["src/generated/prisma/**/*", "node_modules/.prisma/**/*", "node_modules/@prisma/client/**/*"]

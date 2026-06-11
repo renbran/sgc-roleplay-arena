@@ -1,0 +1,62 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+  output        = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  personaId String
+  roomName  String
+  identity  String
+  status    String   @default("pending") // pending, active, completed, failed
+  duration  Int      @default(0) // seconds
+  feedback  String?
+  rating    Int?
+  outcome   String? // won, lost, partial
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AgentStatus {
+  id            String   @id @default(cuid())
+  workerId      String
+  status        String   @default("unknown") // online, offline, busy
+  lastHeartbeat DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Score {
+  id                String   @id @default(cuid())
+  userName          String
+  personaId         String
+  personaName       String
+  difficulty        String   @default("medium")
+  rapport           Int
+  discovery         Int
+  objectionHandling Int
+  closing           Int
+  overall           Int
+  grade             String
+  outcome           String
+  summary           String
+  strengths         String
+  improvements      String
+  duration          Int      @default(0)
+  createdAt         DateTime @default(now())
+}
+
+model AppConfig {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
