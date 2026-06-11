@@ -19,6 +19,67 @@ interface ScoreBody {
   duration?: number;
 }
 
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const limit = Math.min(Number(searchParams.get("limit")) || 50, 100);
+    const timeframe = searchParams.get("timeframe") || "all";
+    const personaId = searchParams.get("personaId") || "";
+
+    let dateFilter: Date | undefined;
+    const now = new Date();
+    if (timeframe === "today") {
+      dateFilter = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    } else if (timeframe === "week") {
+      dateFilter = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    } else if (timeframe === "month") {
+      dateFilter = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    }
+
+    const where: Record<string, unknown> = {};
+    if (dateFilter) where.createdAt = { gte: dateFilter };
+    if (personaId) where.personaId = personaId;
+
+    const scores = await db.score.findMany({
+      where,
+      orderBy: { overall: "desc" },
+      take: limit,
+      select: {
+        id: true,
+        userName: true,
+        personaId: true,
+        personaName: true,
+        overall: true,
+        grade: true,
+        outcome: true,
+        duration: true,
+        createdAt: true,
+        rapport: true,
+        discovery: true,
+        objectionHandling: true,
+        closing: true,
+        difficulty: true,
+      },
+    });
+
+    // Compute rank: same overall score = same rank
+    let rank = 0;
+    let prevOverall = -1;
+    const ranked = scores.map((s, i) => {
+      if (s.overall !== prevOverall) {
+        rank = i + 1;
+        prevOverall = s.overall;
+      }
+      return { ...s, rank };
+    });
+
+    return NextResponse.json({ success: true, scores: ranked, total: scores.length });
+  } catch (err) {
+    console.error("Failed to fetch leaderboard:", err);
+    return NextResponse.json({ success: false, error: "Database error" }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest) {
   let body: unknown;
   try {
