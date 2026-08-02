@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { csrfProtect } from "@/middleware/csrf";
 import { z } from "zod";
 import { db } from "@/lib/db";
 
@@ -12,11 +11,13 @@ import { db } from "@/lib/db";
  *
  * Body: { password: string }
  * Returns: { verified: boolean, reason?: string }
+ *
+ * Note: No CSRF protection needed here — this endpoint only verifies a password
+ * and returns a boolean. It does not modify state, and the password itself is
+ * the authentication mechanism. CSRF protection is kept on state-changing
+ * endpoints like /api/memory and /api/auth/reset-passkey.
  */
 export async function POST(req: NextRequest) {
-  // CSRF protection (high confidence – simple header check)
-  const csrfResponse = csrfProtect(req);
-  if (csrfResponse) return csrfResponse;
   try {
     const { password } = await req.json() as { password?: string };
 

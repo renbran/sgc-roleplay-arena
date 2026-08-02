@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
-const BASE = process.env.PROD_BASE_URL || "https://roleplay-arena-psi.vercel.app";
-const PASSWORD = process.env.PROD_APP_PASSWORD || "SGCTECH2025";
+const BASE = process.env.PROD_BASE_URL || "https://sgc-roleplay-arena.vercel.app";
+const PASSWORD = process.env.PROD_APP_PASSWORD || "SGC2025";
 
 test.describe("Production smoke tests", () => {
   test("homepage loads successfully", async ({ page }) => {
@@ -18,16 +18,19 @@ test.describe("Production smoke tests", () => {
     await passwordInput.fill(PASSWORD);
     await page.getByRole("button", { name: "Access Arena" }).click();
     
-    // Should see name step or dashboard
-    await expect(page.getByText(/Name|Start Roleplay/)).toBeVisible({ timeout: 8000 });
+    // After successful auth, should see name step ("Your full name" placeholder)
+    // or dashboard ("Start Roleplay" button) if name was previously stored
+    await expect(
+      page.getByPlaceholder("Your full name").or(page.getByRole("button", { name: /Start Roleplay/i }))
+    ).toBeVisible({ timeout: 8000 });
   });
 
   test("can see persona selection after login", async ({ page }) => {
     await page.goto(BASE);
-    await page.evaluate((pwd) => {
+    await page.evaluate(() => {
       localStorage.setItem("sgc-roleplay-auth-v2", "true");
       localStorage.setItem("sgc-roleplay-username-v2", "Test User");
-    }, PASSWORD);
+    });
     await page.reload();
     
     await page.click('button:has-text("Start Roleplay")');

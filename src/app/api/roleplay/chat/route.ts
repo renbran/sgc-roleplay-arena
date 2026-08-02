@@ -27,6 +27,12 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY || "";
 const BOOKING_TOKEN_SECRET = process.env.BOOKING_TOKEN_SECRET || "dev-insecure-set-BOOKING_TOKEN_SECRET-in-env";
 
+if (!GROQ_API_KEY && !MISTRAL_API_KEY) {
+  console.warn(
+    "[chat] No LLM provider configured (GROQ_API_KEY / MISTRAL_API_KEY missing). All persona chats will fail with 503."
+  );
+}
+
 // Issues a short-lived HMAC token tied to this session. Verified by /api/booking/provision.
 function generateBookingToken(sessionKey: string): string {
   const payload = `${sessionKey}:${Date.now()}`;
@@ -373,25 +379,38 @@ async function callLLM(
   history: Array<{ role: string; content: string }>,
   params: { temperature: number; max_tokens: number }
 ): Promise<{ text: string; provider: string }> {
+  if (!GROQ_API_KEY && !MISTRAL_API_KEY) {
+    throw new Error(
+      "No LLM provider configured. Set GROQ_API_KEY or MISTRAL_API_KEY in the Vercel project Environment Variables, then redeploy."
+    );
+  }
+
+  const failures: string[] = [];
   if (GROQ_API_KEY) {
     try {
       const text = await callGroqLLM(history, params);
       if (text) return { text, provider: "groq" };
-    } catch {
-      // fall through to Mistral
+      failures.push("Groq returned an empty response");
+    } catch (err) {
+      failures.push(err instanceof Error ? err.message : "Groq failed");
     }
+  } else {
+    failures.push("GROQ_API_KEY not set");
   }
 
   if (MISTRAL_API_KEY) {
     try {
       const text = await callMistralLLM(history, params);
       if (text) return { text, provider: "mistral" };
-    } catch {
-      // both failed
+      failures.push("Mistral returned an empty response");
+    } catch (err) {
+      failures.push(err instanceof Error ? err.message : "Mistral failed");
     }
+  } else {
+    failures.push("MISTRAL_API_KEY not set");
   }
 
-  throw new Error("AI response generation failed — all providers unavailable");
+  throw new Error(`AI response generation failed — all providers unavailable (${failures.join("; ")})`);
 }
 
 // ─── POST handler ─────────────────────────────────────────────────────────────
@@ -537,12 +556,20 @@ export async function POST(request: Request) {
       ...(aiResponse !== rawResponse && rawResponse !== "[no response]" ? { sanitized: true } : {}),
     });
   } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : "Unknown error";
+    const notConfigured = detail.includes("not configured") || detail.includes("No LLM provider configured");
     return NextResponse.json(
       {
-        error: "Failed to generate response",
-        detail: error instanceof Error ? error.message : "Unknown error",
+        error: notConfigured ? "LLM provider not configured" : "Failed to generate response",
+        detail,
+        ...(notConfigured
+          ? {
+              setupRequired: true,
+              hint: "Add GROQ_API_KEY and/or MISTRAL_API_KEY in Vercel → Project → Settings → Environment Variables, then redeploy.",
+            }
+          : {}),
       },
-      { status: 500 }
+      { status: notConfigured ? 503 : 500 }
     );
   }
 }

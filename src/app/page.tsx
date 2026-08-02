@@ -33,6 +33,9 @@ import { useIsMobile } from "@/hooks/use-mobile";
 
 const AUTH_STORAGE_KEY = "sgc-roleplay-auth-v2";
 const USER_NAME_STORAGE_KEY = "sgc-roleplay-username-v2";
+const USER_EMAIL_STORAGE_KEY = "sgc-roleplay-email-v2";
+const USER_MOBILE_STORAGE_KEY = "sgc-roleplay-mobile-v2";
+
 const SCORES_STORAGE_KEY = "sgc-roleplay-scores-v2";
 const PENDING_SCORE_KEY = "sgc-roleplay-pending-score-v2";
 const ACTIVE_SESSION_KEY = "sgc-roleplay-active-session-v2";
@@ -131,6 +134,41 @@ function getGradeColor(grade: string) {
   return "bg-red-100 text-red-700 border-red-300";
 }
 
+// ─── Confetti ─────────────────────────────────────────────────────────────────
+
+const CONFETTI_COLORS = ["#22c55e", "#3b82f6", "#eab308", "#ef4444", "#a855f7", "#ec4899", "#06b6d4"];
+
+function fireConfetti(count = 80) {
+  if (typeof document === "undefined") return;
+  const container = document.body;
+  const pieces: HTMLDivElement[] = [];
+  for (let i = 0; i < count; i++) {
+    const el = document.createElement("div");
+    el.className = "confetti-piece";
+    const color = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
+    const size = 6 + Math.random() * 8;
+    const left = Math.random() * 100;
+    const delay = Math.random() * 1.5;
+    const duration = 2 + Math.random() * 2;
+    const rotation = Math.random() * 360;
+    el.style.cssText = `
+      left: ${left}%;
+      width: ${size}px; height: ${size}px;
+      background: ${color};
+      border-radius: ${Math.random() > 0.5 ? "50%" : "2px"};
+      animation-delay: ${delay}s;
+      animation-duration: ${duration}s;
+      transform: rotate(${rotation}deg);
+    `;
+    container.appendChild(el);
+    pieces.push(el);
+  }
+  // Cleanup after animation
+  setTimeout(() => {
+    pieces.forEach(p => p.remove());
+  }, 5000);
+}
+
 // ─── Main App ────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -142,7 +180,12 @@ export default function Home() {
   const [showNameStep, setShowNameStep] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const [nameError, setNameError] = useState("");
+  const [emailInput, setEmailInput] = useState("");
+  const [mobileInput, setMobileInput] = useState("");
   const [userName, setUserName] = useState<string>("");
+  const [userEmail, setUserEmail] = useState<string>("");
+  const [userMobile, setUserMobile] = useState<string>("");
+  const [showCelebration, setShowCelebration] = useState(false);
 
   const [view, setView] = useState<AppView>("dashboard");
   const [selectedPersona, setSelectedPersona] = useState<Persona | null>(null);
@@ -247,16 +290,27 @@ export default function Home() {
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLInputElement | null>(null);
+  const userEmailRef = useRef("");
+  const userMobileRef = useRef("");
+  const leadFormSubmittedRef = useRef(false);
 
   // ─── Auth Check ────────────────────────────────────────────────────────────
 
   useEffect(() => {
     const stored = localStorage.getItem(AUTH_STORAGE_KEY);
-    let storedName = "";
     if (stored === "true") {
       setIsAuthenticated(true);
-      storedName = localStorage.getItem(USER_NAME_STORAGE_KEY) || "";
-      if (storedName) setUserName(storedName);
+      // Restore stored user contact info
+      const storedName = localStorage.getItem(USER_NAME_STORAGE_KEY);
+      const storedEmail = localStorage.getItem(USER_EMAIL_STORAGE_KEY);
+      const storedMobile = localStorage.getItem(USER_MOBILE_STORAGE_KEY);
+      if (storedName && storedEmail && storedMobile) {
+        setUserName(storedName);
+        setUserEmail(storedEmail);
+        setUserMobile(storedMobile);
+      } else {
+        setShowNameStep(true);
+      }
     }
     try {
       const storedScores = localStorage.getItem(SCORES_STORAGE_KEY);
@@ -286,10 +340,14 @@ export default function Home() {
       if (data.verified) {
         localStorage.setItem(AUTH_STORAGE_KEY, "true");
         setAuthError("");
+        // Check if user already registered
         const storedName = localStorage.getItem(USER_NAME_STORAGE_KEY);
-        if (storedName) {
+        const storedEmail = localStorage.getItem(USER_EMAIL_STORAGE_KEY);
+        const storedMobile = localStorage.getItem(USER_MOBILE_STORAGE_KEY);
+        if (storedName && storedEmail && storedMobile) {
           setUserName(storedName);
-          setIsAuthenticated(true);
+          setUserEmail(storedEmail);
+          setUserMobile(storedMobile);
         } else {
           setShowNameStep(true);
         }
@@ -304,9 +362,12 @@ export default function Home() {
       localStorage.setItem(AUTH_STORAGE_KEY, "true");
       setAuthError("");
       const storedName = localStorage.getItem(USER_NAME_STORAGE_KEY);
-      if (storedName) {
+      const storedEmail = localStorage.getItem(USER_EMAIL_STORAGE_KEY);
+      const storedMobile = localStorage.getItem(USER_MOBILE_STORAGE_KEY);
+      if (storedName && storedEmail && storedMobile) {
         setUserName(storedName);
-        setIsAuthenticated(true);
+        setUserEmail(storedEmail);
+        setUserMobile(storedMobile);
       } else {
         setShowNameStep(true);
       }
@@ -315,11 +376,24 @@ export default function Home() {
     }
   };
 
-  const handleNameSubmit = () => {
+  // Keep refs in sync with state for use in callbacks that can't safely list these as deps
+  useEffect(() => { userEmailRef.current = userEmail; }, [userEmail]);
+  useEffect(() => { userMobileRef.current = userMobile; }, [userMobile]);
+  useEffect(() => { leadFormSubmittedRef.current = leadFormSubmitted; }, [leadFormSubmitted]);
+
+  const handleRegistrationSubmit = () => {
     const name = nameInput.trim();
-    if (!name) { setNameError("Please enter your name."); return; }
+    const email = emailInput.trim();
+    const mobile = mobileInput.trim();
+    if (!name) { setNameError("Please enter your full name."); return; }
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setNameError("Please enter a valid email address."); return; }
+    if (!mobile) { setNameError("Please enter your mobile number."); return; }
     localStorage.setItem(USER_NAME_STORAGE_KEY, name);
+    localStorage.setItem(USER_EMAIL_STORAGE_KEY, email);
+    localStorage.setItem(USER_MOBILE_STORAGE_KEY, mobile);
     setUserName(name);
+    setUserEmail(email);
+    setUserMobile(mobile);
     setIsAuthenticated(true);
     setShowNameStep(false);
   };
@@ -327,7 +401,15 @@ export default function Home() {
   const handleLogout = () => {
     setIsAuthenticated(false);
     localStorage.removeItem(AUTH_STORAGE_KEY);
+    localStorage.removeItem(USER_NAME_STORAGE_KEY);
+    localStorage.removeItem(USER_EMAIL_STORAGE_KEY);
+    localStorage.removeItem(USER_MOBILE_STORAGE_KEY);
+    localStorage.removeItem(SCORES_STORAGE_KEY);
+    localStorage.removeItem(PENDING_SCORE_KEY);
+    localStorage.removeItem(ACTIVE_SESSION_KEY);
     setAuthPassword("");
+    setSavedScores([]);
+    setShowCelebration(false);
   };
 
   // ─── Audio Unlock (for mobile browsers) ──────────────────────────────────
@@ -583,11 +665,32 @@ export default function Home() {
         }
         if (data.booked) {
           setBookingToken(data.bookingToken || "");
-          if (!leadFormSubmitted) {
+          // If user info already collected, auto-submit booking and celebrate
+          if (userEmailRef.current && userMobileRef.current && !leadFormSubmittedRef.current) {
+            fetch("/api/booking/provision", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                fullName: userName,
+                email: userEmailRef.current,
+                mobile: userMobileRef.current,
+                personaId: selectedPersona?.id,
+                sessionId: chatSessionId,
+                bookingToken: data.bookingToken || "",
+              }),
+            }).catch(() => { /* non-blocking */ });
+            setLeadFormSubmitted(true);
+            setSessionBooked(true);
+            setEndOutcome("won");
+            fireConfetti();
+            setShowCelebration(true);
+          } else if (!leadFormSubmittedRef.current) {
             setShowLeadForm(true);
           } else {
             setSessionBooked(true);
             setEndOutcome("won");
+            fireConfetti();
+            setShowCelebration(true);
           }
         }
 
@@ -1215,7 +1318,7 @@ export default function Home() {
               </div>
               <CardTitle className="text-xl text-white">SGC TECH Roleplay Arena</CardTitle>
               <CardDescription className="text-slate-400">
-                {showNameStep ? "One more step — tell us your name" : "Enter your access password to continue"}
+                {showNameStep ? "Register your details to get started" : "Enter your access password to continue"}
               </CardDescription>
             </CardHeader>
             {!showNameStep ? (
@@ -1251,17 +1354,30 @@ export default function Home() {
               </CardContent>
             ) : (
               <CardContent className="space-y-4">
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <p className="text-sm text-slate-400 text-center">
-                    Your name will appear in scorecard feedback and is used by the AI persona during the call.
+                    Enter your details below. This info will be used to create your SGC Tech account when you book a meeting.
                   </p>
                   <Input
                     placeholder="Your full name"
                     value={nameInput}
                     onChange={e => { setNameInput(e.target.value); setNameError(""); }}
-                    onKeyDown={e => { if (e.key === "Enter") handleNameSubmit(); }}
                     className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-emerald-500"
                     autoFocus
+                  />
+                  <Input
+                    type="email"
+                    placeholder="Email address"
+                    value={emailInput}
+                    onChange={e => { setEmailInput(e.target.value); setNameError(""); }}
+                    className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-emerald-500"
+                  />
+                  <Input
+                    type="tel"
+                    placeholder="Mobile number (e.g. +971 50 123 4567)"
+                    value={mobileInput}
+                    onChange={e => { setMobileInput(e.target.value); setNameError(""); }}
+                    className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-emerald-500"
                   />
                   {nameError && (
                     <motion.p initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-red-400 flex items-center gap-1">
@@ -1269,7 +1385,7 @@ export default function Home() {
                     </motion.p>
                   )}
                 </div>
-                <Button onClick={handleNameSubmit} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white gap-2" size="lg">
+                <Button onClick={handleRegistrationSubmit} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white gap-2" size="lg">
                   <ArrowRight className="w-4 h-4" /> Enter Arena
                 </Button>
               </CardContent>
@@ -1285,7 +1401,7 @@ export default function Home() {
     );
   }
 
-  // ─── RENDER: Name Registration (returning users with no stored name) ────────
+  // ─── RENDER: Registration (returning users with no stored info) ─────────────
 
   if (isAuthenticated && !userName) {
     return (
@@ -1305,17 +1421,31 @@ export default function Home() {
                 </div>
               </div>
               <CardTitle className="text-xl text-white">Welcome to the Arena</CardTitle>
-              <CardDescription className="text-slate-400">What should the AI call you during your roleplays?</CardDescription>
+              <CardDescription className="text-slate-400">Register your details to get started</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-2">
+              <div className="space-y-3">
                 <Input
                   placeholder="Your full name"
                   value={nameInput}
                   onChange={e => { setNameInput(e.target.value); setNameError(""); }}
-                  onKeyDown={e => { if (e.key === "Enter") handleNameSubmit(); }}
+                  onKeyDown={e => { if (e.key === "Enter") handleRegistrationSubmit(); }}
                   className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-emerald-500"
                   autoFocus
+                />
+                <Input
+                  type="email"
+                  placeholder="Email address"
+                  value={emailInput}
+                  onChange={e => { setEmailInput(e.target.value); setNameError(""); }}
+                  className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-emerald-500"
+                />
+                <Input
+                  type="tel"
+                  placeholder="Mobile number (e.g. +971 50 123 4567)"
+                  value={mobileInput}
+                  onChange={e => { setMobileInput(e.target.value); setNameError(""); }}
+                  className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-emerald-500"
                 />
                 {nameError && (
                   <motion.p initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="text-sm text-red-400 flex items-center gap-1">
@@ -1323,7 +1453,7 @@ export default function Home() {
                   </motion.p>
                 )}
               </div>
-              <Button onClick={handleNameSubmit} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white gap-2" size="lg">
+              <Button onClick={handleRegistrationSubmit} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white gap-2" size="lg">
                 <ArrowRight className="w-4 h-4" /> Enter Arena
               </Button>
             </CardContent>
@@ -2695,7 +2825,7 @@ export default function Home() {
         </div>
       </footer>
 
-      {/* Booking Lead Capture Form */}
+      {/* Booking Lead Capture Form (fallback for sessions without stored user info) */}
       <Dialog
         open={showLeadForm}
         onOpenChange={(open) => {
@@ -2784,6 +2914,54 @@ export default function Home() {
               {leadFormLoading ? "Submitting..." : "Get My Credentials"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Celebration Dialog (shown after auto-booking with stored user info) */}
+      <Dialog open={showCelebration} onOpenChange={(open) => {
+        if (!open) { setShowCelebration(false); }
+      }}>
+        <DialogContent className="sm:max-w-md overflow-visible">
+          <div className="absolute inset-0 rounded-lg overflow-hidden pointer-events-none">
+            <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 via-transparent to-blue-500/10" />
+          </div>
+          <div className="relative z-10 celebration-enter">
+            <DialogHeader className="text-center">
+              <div className="flex justify-center mb-2">
+                <div className="w-20 h-20 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center shadow-lg shadow-emerald-500/30">
+                  <span className="text-4xl">🎉</span>
+                </div>
+              </div>
+              <DialogTitle className="text-2xl font-bold text-emerald-600">
+                Congratulations, {userName}!
+              </DialogTitle>
+              <DialogDescription className="text-base mt-2">
+                You&apos;ve successfully booked a meeting with{" "}
+                <strong className="text-foreground">{selectedPersona?.name}</strong>.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 py-4 text-center">
+              <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
+                <p className="text-sm text-emerald-800 font-medium">Your SGC Tech account is being provisioned.</p>
+                <p className="text-xs text-emerald-600 mt-1">
+                  Credentials will be sent to <strong>{userEmail}</strong>
+                </p>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Check your email for login credentials to access your account dashboard.
+              </p>
+            </div>
+            <DialogFooter className="justify-center">
+              <Button
+                onClick={() => {
+                  setShowCelebration(false);
+                }}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white min-w-[120px]"
+              >
+                Awesome!
+              </Button>
+            </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
 
