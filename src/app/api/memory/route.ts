@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { csrfProtect } from "@/middleware/csrf";
+import { requireAdminAuth } from "@/lib/admin-auth";
 import {
   getAllMemories,
   deleteUserMemories,
@@ -21,6 +21,9 @@ export const dynamic = "force-dynamic";
  *   GET /api/memory?userId=john&personaId=p1_faisal
  */
 export async function GET(request: Request) {
+  const unauthorized = requireAdminAuth(request);
+  if (unauthorized) return unauthorized;
+
   try {
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get("userId");
@@ -75,8 +78,8 @@ export async function GET(request: Request) {
  *   category  (optional) – e.g. "rep_skill", "preference", "session_fact"
  */
 export async function POST(request: Request) {
-  const csrfResponse = csrfProtect(request);
-  if (csrfResponse) return csrfResponse;
+  const unauthorized = requireAdminAuth(request);
+  if (unauthorized) return unauthorized;
   try {
     const body = await request.json();
     const { userId, personaId, sessionId, memory, category } = body;
@@ -121,8 +124,8 @@ export async function POST(request: Request) {
  *   userId (required) – the rep identifier
  */
 export async function DELETE(request: Request) {
-  const csrfResponse = csrfProtect(request);
-  if (csrfResponse) return csrfResponse;
+  const unauthorized = requireAdminAuth(request);
+  if (unauthorized) return unauthorized;
   try {
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get("userId");

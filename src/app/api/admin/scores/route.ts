@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { requireAdminAuth } from "@/lib/admin-auth";
 
 interface ScoreRow {
   id: string;
@@ -88,12 +89,8 @@ function getBestGrade(scores: ParsedScore[]): string {
 }
 
 export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get("Authorization");
-  const adminPassword = process.env.ADMIN_PASSWORD;
-
-  if (!adminPassword || authHeader !== `Bearer ${adminPassword}`) {
-    return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
-  }
+  const unauthorized = requireAdminAuth(req);
+  if (unauthorized) return unauthorized;
 
   try {
     const rows = await db.score.findMany({

@@ -39,7 +39,6 @@ const USER_MOBILE_STORAGE_KEY = "sgc-roleplay-mobile-v2";
 const SCORES_STORAGE_KEY = "sgc-roleplay-scores-v2";
 const PENDING_SCORE_KEY = "sgc-roleplay-pending-score-v2";
 const ACTIVE_SESSION_KEY = "sgc-roleplay-active-session-v2";
-const APP_PASSWORD = process.env.NEXT_PUBLIC_APP_PASSWORD || "SGC2025";
 
 // ─── Persona Type Mapping ────────────────────────────────────────────────────
 
@@ -329,7 +328,8 @@ export default function Home() {
   }, []);
 
   const handleLogin = async () => {
-    // Try server-side verification first
+    // Password verification always happens server-side — never compare against
+    // a client-visible value, since anything in the bundle is public.
     try {
       const res = await fetch("/api/auth/verify", {
         method: "POST",
@@ -351,28 +351,11 @@ export default function Home() {
         } else {
           setShowNameStep(true);
         }
-        return;
+      } else {
+        setAuthError("Invalid password. Please try again.");
       }
     } catch {
-      // API unreachable — fall back to client-side check (dev/offline)
-    }
-
-    // Fallback: client-side check against env var
-    if (authPassword === APP_PASSWORD) {
-      localStorage.setItem(AUTH_STORAGE_KEY, "true");
-      setAuthError("");
-      const storedName = localStorage.getItem(USER_NAME_STORAGE_KEY);
-      const storedEmail = localStorage.getItem(USER_EMAIL_STORAGE_KEY);
-      const storedMobile = localStorage.getItem(USER_MOBILE_STORAGE_KEY);
-      if (storedName && storedEmail && storedMobile) {
-        setUserName(storedName);
-        setUserEmail(storedEmail);
-        setUserMobile(storedMobile);
-      } else {
-        setShowNameStep(true);
-      }
-    } else {
-      setAuthError("Invalid password. Please try again.");
+      setAuthError("Couldn't reach the server — check your connection and try again.");
     }
   };
 

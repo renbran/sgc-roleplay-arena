@@ -1,6 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHmac, timingSafeEqual } from "crypto";
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { rateLimit } from "@/lib/rate-limit";
+
+function safeStringEqual(a: string, b: string): boolean {
+  // HMAC both sides to a fixed-length digest so timingSafeEqual never throws on
+  // length mismatch, and the comparison cost doesn't reveal valid prefix length.
+  const digestA = createHmac("sha256", "auth-compare").update(a).digest();
+  const digestB = createHmac("sha256", "auth-compare").update(b).digest();
+  return timingSafeEqual(digestA, digestB);
+}
 
 /**
  * POST /api/auth/verify
@@ -18,6 +28,9 @@ import { db } from "@/lib/db";
  * endpoints like /api/memory and /api/auth/reset-passkey.
  */
 export async function POST(req: NextRequest) {
+  const limited = rateLimit(req, "auth-verify", 5, 60_000);
+  if (limited) return limited;
+
   try {
     const { password } = await req.json() as { password?: string };
 
@@ -48,14 +61,14 @@ export async function POST(req: NextRequest) {
     }
 
     if (dbPassword) {
-      const verified = password === dbPassword;
+      const verified = safeStringEqual(password, dbPassword);
       return NextResponse.json({ verified });
     }
 
     // 2. Fallback to env var (Next.js bundles NEXT_PUBLIC_ vars — read at runtime on server)
     const envPassword = process.env.APP_PASSWORD || process.env.NEXT_PUBLIC_APP_PASSWORD;
     if (envPassword) {
-      const verified = password === envPassword;
+      const verified = safeStringEqual(password, envPassword);
       return NextResponse.json({ verified });
     }
 

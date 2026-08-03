@@ -47,7 +47,7 @@ Key behaviors:
 
 | Route | Purpose | LLM/Provider |
 |-------|---------|--------------|
-| `POST /api/roleplay/chat` | AI persona chat | Groq (llama-3.3-70b) → Mistral fallback |
+| `POST /api/roleplay/chat` | AI persona chat | OpenCode Zen (`ling-3.0-flash-free`) → Mistral → Groq |
 | `POST /api/roleplay/asr` | Speech-to-text | Deepgram nova-2 → Groq Whisper fallback |
 | `GET/POST /api/roleplay/tts` | Text-to-speech | Deepgram Aura-2 |
 | `POST /api/roleplay/score` | Score a conversation | Anthropic (claude-opus-4-7) → Groq → Mistral |
@@ -100,10 +100,11 @@ Python LiveKit agent for real-time voice calls (Deepgram STT, Groq/Mistral LLM, 
 # Required for core features
 DATABASE_URL=postgresql://...
 DEEPGRAM_API_KEY=...
-GROQ_API_KEY=...
 
-# Optional / fallback providers
+# Chat provider chain (priority order): Zen -> Mistral -> Groq
+OPENCODE_API_KEY=...      # primary; see src/lib/opencode.ts for model choice + probe data
 MISTRAL_API_KEY=...
+GROQ_API_KEY=...
 ANTHROPIC_API_KEY=...     # used by /api/roleplay/score as primary scorer
 
 # LiveKit (for mini-services/livekit-agent only)
