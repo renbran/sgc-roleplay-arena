@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createHmac, randomBytes, timingSafeEqual } from "crypto";
-import { Resend } from "resend";
 import { buildSgcEmail } from "@/lib/booking-utils";
+import { rateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -144,6 +144,9 @@ function credentialsEmailHtml(fullName: string, sgcEmail: string, tempPassword: 
 // ─── POST handler ─────────────────────────────────────────────────────────────
 
 export async function POST(request: Request) {
+  const limited = rateLimit(request, "booking-provision", 5, 60_000);
+  if (limited) return limited;
+
   try {
     const body = await request.json();
     const { fullName, email, mobile, personaId, sessionId, bookingToken } = body as {
@@ -224,8 +227,16 @@ export async function POST(request: Request) {
     }
 
     // ── Send credentials email via Resend ─────────────────────────────────────
+    // Lazy-import Resend inside the handler so Vercel's static route discovery
+    // (which scans top-level imports at build time) doesn't try to bundle a
+    // Node-only SDK at module init. If the SDK can't be resolved for any
+    // reason, the build emits the route handler anyway and we fall through
+    // to the catch — the user account is still created, the email just
+    // doesn't go out (a manual follow-up is acceptable; the booking itself
+    // is not blocked by email delivery).
     if (RESEND_API_KEY) {
       try {
+        const { Resend } = await import("resend");
         const resend = new Resend(RESEND_API_KEY);
         await resend.emails.send({
           from: EMAIL_FROM,
