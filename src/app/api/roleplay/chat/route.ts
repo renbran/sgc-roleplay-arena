@@ -7,6 +7,8 @@ import {
   extractMemories,
   storeMemories,
 } from "@/lib/memory";
+import { rateLimit } from "@/lib/rate-limit";
+import { callZenLLM } from "@/lib/opencode";
 
 // In-memory: lost on serverless cold start. For production: persist to Session.notes in DB.
 const conversations = new Map<string, Array<{ role: string; content: string }>>();
@@ -21,15 +23,38 @@ interface SessionState {
 
 const sessionStates = new Map<string, SessionState>();
 
+// Bound memory on long-running deployments (the self-hosted server). Tracks
+// the last time each session was touched and evicts entries idle longer than
+// SESSION_TTL_MS. On serverless cold start the Maps reset anyway, so this is
+// effectively a no-op there.
+const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const lastAccessed = new Map<string, number>();
+
+let lastPrune = Date.now();
+function touchSession(convKey: string): void {
+  const now = Date.now();
+  lastAccessed.set(convKey, now);
+  if (now - lastPrune < 60_000) return;
+  lastPrune = now;
+  for (const [key, last] of lastAccessed) {
+    if (now - last > SESSION_TTL_MS) {
+      conversations.delete(key);
+      sessionStates.delete(key);
+      lastAccessed.delete(key);
+    }
+  }
+}
+
 export const dynamic = "force-dynamic";
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY || "";
+const OPENCODE_API_KEY = process.env.OPENCODE_API_KEY || "";
 const BOOKING_TOKEN_SECRET = process.env.BOOKING_TOKEN_SECRET || "dev-insecure-set-BOOKING_TOKEN_SECRET-in-env";
 
-if (!GROQ_API_KEY && !MISTRAL_API_KEY) {
+if (!GROQ_API_KEY && !MISTRAL_API_KEY && !OPENCODE_API_KEY) {
   console.warn(
-    "[chat] No LLM provider configured (GROQ_API_KEY / MISTRAL_API_KEY missing). All persona chats will fail with 503."
+    "[chat] No LLM provider configured (GROQ_API_KEY / MISTRAL_API_KEY / OPENCODE_API_KEY missing). All persona chats will fail with 503."
   );
 }
 
@@ -287,10 +312,62 @@ function validateResponse(response: string): string {
   // 4. Strip leaked markdown-like persona meta
   cleaned = cleaned.replace(/^#{1,6}\s*(?:YOUR\s+ROLE|YOUR\s+APPROACH|CONVERSATIONAL\s+RULES|DIAGNOSIS|DIAGNOSTIC)/gim, '');
 
-  // 5. Clean up whitespace left by stripping
+  // 5. Strip AI-slop — this is a phone call, not a chatbot reply
+  cleaned = stripAiSlop(cleaned);
+
+  // 6. Clean up whitespace left by stripping
   cleaned = cleaned.replace(/\s{3,}/g, '  ').trim();
 
   return cleaned || "[no response]";
+}
+
+// ─── Anti-AI-slop cleanup ──────────────────────────────────────────────────────
+// LLMs default to chatbot habits — markdown formatting, bullet lists, and stock
+// assistant phrases ("Certainly!", "I hope this helps") — none of which a real
+// person says on a phone call. Strip them so the transcript stays believable.
+
+const AI_SLOP_PATTERNS: Array<[RegExp, string]> = [
+  // Markdown headers, bold/italic, bullet and numbered list markers
+  [/^#{1,6}\s+/gm, ''],
+  [/\*\*([^*]+)\*\*/g, '$1'],
+  [/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '$1'],
+  [/^[ \t]*[-*•][ \t]+/gm, ''],
+  [/^[ \t]*\d+\.[ \t]+/gm, ''],
+  // Stock assistant/chatbot phrases that break character
+  [/\b(?:certainly|absolutely|great question)!?,?\s*/gi, ''],
+  [/\bi'?d be happy to\b[^.!?]*[.!?]/gi, ''],
+  [/\b(?:i hope (?:this|that) helps|let me know if you have any (?:other )?questions|feel free to (?:reach out|ask)|is there anything else i can help(?: you)? with)\b[^.!?]*[.!?]/gi, ''],
+  [/\b(?:in conclusion|to summarize|to sum up)[,:]?\s*/gi, ''],
+  [/\bit'?s (?:important|worth) to note that\b\s*/gi, ''],
+  [/\blet'?s dive into\b/gi, "let's talk about"],
+  [/\bhere'?s a (?:quick )?breakdown\b/gi, "here's the thing"],
+];
+
+function stripAiSlop(response: string): string {
+  let cleaned = response;
+  for (const [pattern, replacement] of AI_SLOP_PATTERNS) {
+    cleaned = cleaned.replace(pattern, replacement);
+  }
+  const collapsed = cleaned.replace(/\s{3,}/g, '  ').trim();
+  return collapsed || response;
+}
+
+// ─── Anti-repetition — vary the opening vocal interjection turn to turn ──────
+// The persona prompt asks for varied interjections ("Hmm", "Oh", "Well"), but
+// LLMs default to reusing the same one. If this reply opens with the exact
+// same interjection as the persona's last turn, drop it rather than repeat it.
+
+const OPENING_INTERJECTION = /^(hmm+|mmm+|uh+|um+|ah+|oh+|well|right|sure|yeah|okay|ok)[.,]?\s+/i;
+
+function dedupeOpeningInterjection(response: string, previousAssistantResponse: string | undefined): string {
+  if (!previousAssistantResponse) return response;
+  const current = response.match(OPENING_INTERJECTION);
+  const previous = previousAssistantResponse.match(OPENING_INTERJECTION);
+  if (!current || !previous) return response;
+  if (current[0].trim().toLowerCase() !== previous[0].trim().toLowerCase()) return response;
+
+  const rest = response.slice(current[0].length);
+  return rest.charAt(0).toUpperCase() + rest.slice(1);
 }
 
 // ─── Booking detection ────────────────────────────────────────────────────────
@@ -315,7 +392,52 @@ function detectBooking(response: string): boolean {
   return patterns.some(p => p.test(response));
 }
 
+// ─── Booking qualification gate (fallback proxy) ──────────────────────────────
+// detectBooking() only reads the AI's wording — a compliant/agreeable LLM can
+// produce booking-shaped text (e.g. "sounds good, let's touch base Tuesday")
+// even in early stages if a rep is pushy or the model drifts off-script.
+// This proxy (stage + pain count + quality turns) is the fast, always-available
+// check. The real gate is the semantic classifyBookingQualification() below,
+// which reads the actual transcript for the four Verifiable Buyer Exit
+// Criteria; this proxy only kicks in if that LLM classification call fails.
+
+const MIN_PAINS_FOR_BOOKING = 2;
+const MIN_QUALITY_TURNS_FOR_BOOKING = 3;
+
+function isQualifiedForBooking(
+  stage: string,
+  unlockedPains: string[],
+  qualityTurns: number
+): boolean {
+  const stageEarned = stage === "consideration" || stage === "closing";
+  const painsSurfaced = unlockedPains.length >= MIN_PAINS_FOR_BOOKING;
+  const sustainedQuality = qualityTurns >= MIN_QUALITY_TURNS_FOR_BOOKING;
+  return stageEarned && painsSurfaced && sustainedQuality;
+}
+
 // ─── LLM providers ────────────────────────────────────────────────────────────
+
+// A single hung provider call must not eat the entire function budget — this
+// matters more now that a booking turn can chain up to 3 sequential LLM calls
+// (main response, qualification classifier, premature-commit correction).
+// A fast, explicit failure lets callLLM() fall through to the other provider
+// instead of stalling until Vercel kills the whole request.
+const PROVIDER_FETCH_TIMEOUT_MS = 10_000;
+
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 async function callGroqLLM(
   history: Array<{ role: string; content: string }>,
@@ -323,7 +445,7 @@ async function callGroqLLM(
 ): Promise<string> {
   if (!GROQ_API_KEY) throw new Error("GROQ_API_KEY not configured");
 
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const response = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${GROQ_API_KEY}`,
@@ -335,7 +457,7 @@ async function callGroqLLM(
       max_tokens: params.max_tokens,
       temperature: params.temperature,
     }),
-  });
+  }, PROVIDER_FETCH_TIMEOUT_MS);
 
   if (!response.ok) {
     const errorBody = await response.text();
@@ -352,7 +474,7 @@ async function callMistralLLM(
 ): Promise<string> {
   if (!MISTRAL_API_KEY) throw new Error("MISTRAL_API_KEY not configured");
 
-  const response = await fetch("https://api.mistral.ai/v1/chat/completions", {
+  const response = await fetchWithTimeout("https://api.mistral.ai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${MISTRAL_API_KEY}`,
@@ -364,7 +486,7 @@ async function callMistralLLM(
       max_tokens: params.max_tokens,
       temperature: params.temperature,
     }),
-  });
+  }, PROVIDER_FETCH_TIMEOUT_MS);
 
   if (!response.ok) {
     const errorBody = await response.text();
@@ -379,23 +501,28 @@ async function callLLM(
   history: Array<{ role: string; content: string }>,
   params: { temperature: number; max_tokens: number }
 ): Promise<{ text: string; provider: string }> {
-  if (!GROQ_API_KEY && !MISTRAL_API_KEY) {
+  if (!GROQ_API_KEY && !MISTRAL_API_KEY && !OPENCODE_API_KEY) {
     throw new Error(
-      "No LLM provider configured. Set GROQ_API_KEY or MISTRAL_API_KEY in the Vercel project Environment Variables, then redeploy."
+      "No LLM provider configured. Set GROQ_API_KEY, MISTRAL_API_KEY, or OPENCODE_API_KEY in the Vercel project Environment Variables, then redeploy."
     );
   }
 
   const failures: string[] = [];
-  if (GROQ_API_KEY) {
+
+  // Tier 1: OpenCode Zen (ling-3.0-flash-free by default). See
+  // src/lib/opencode.ts for the probe data behind this choice. Free-tier
+  // reliability is unproven at sustained volume — a 429 or empty response
+  // falls through to Mistral rather than failing the turn.
+  if (OPENCODE_API_KEY) {
     try {
-      const text = await callGroqLLM(history, params);
-      if (text) return { text, provider: "groq" };
-      failures.push("Groq returned an empty response");
+      const text = await callZenLLM(history, params);
+      if (text) return { text, provider: "zen" };
+      failures.push("Zen returned an empty response");
     } catch (err) {
-      failures.push(err instanceof Error ? err.message : "Groq failed");
+      failures.push(err instanceof Error ? err.message : "Zen failed");
     }
   } else {
-    failures.push("GROQ_API_KEY not set");
+    failures.push("OPENCODE_API_KEY not set");
   }
 
   if (MISTRAL_API_KEY) {
@@ -410,12 +537,133 @@ async function callLLM(
     failures.push("MISTRAL_API_KEY not set");
   }
 
+  if (GROQ_API_KEY) {
+    try {
+      const text = await callGroqLLM(history, params);
+      if (text) return { text, provider: "groq" };
+      failures.push("Groq returned an empty response");
+    } catch (err) {
+      failures.push(err instanceof Error ? err.message : "Groq failed");
+    }
+  } else {
+    failures.push("GROQ_API_KEY not set");
+  }
+
   throw new Error(`AI response generation failed — all providers unavailable (${failures.join("; ")})`);
+}
+
+// ─── Booking qualification classifier ─────────────────────────────────────────
+// The proxy gate above (pain count + quality turns) can't tell whether the rep
+// actually surfaced an approver or a timeline — real qualification talk is too
+// varied in wording for regex. Instead, ask the LLM to read the real transcript
+// and judge the four Verifiable Buyer Exit Criteria the persona prompt already
+// coaches toward: a specific problem, the cost of inaction, who approves, and a
+// timeline. This only runs when detectBooking() already fired, so it costs one
+// extra call on the rare turn where a booking is actually being considered —
+// not on every message.
+
+interface QualificationGates {
+  specificProblem: boolean;
+  costOfInaction: boolean;
+  approverIdentified: boolean;
+  timelineIdentified: boolean;
+}
+
+const MIN_GATES_FOR_BOOKING = 3;
+
+function isQualificationGates(value: unknown): value is QualificationGates {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.specificProblem === "boolean" &&
+    typeof v.costOfInaction === "boolean" &&
+    typeof v.approverIdentified === "boolean" &&
+    typeof v.timelineIdentified === "boolean"
+  );
+}
+
+async function classifyBookingQualification(
+  history: Array<{ role: string; content: string }>,
+  personaName: string
+): Promise<QualificationGates | null> {
+  const dialogue = history
+    .filter(m => m.role === "user" || m.role === "assistant")
+    .slice(-40)
+    .map(m => `${m.role === "user" ? "REP" : personaName.toUpperCase()}: ${m.content}`)
+    .join("\n");
+
+  const classifierMessages = [
+    {
+      role: "system",
+      content: `You are a sales qualification auditor reviewing a cold-call transcript between a sales rep (REP) and a prospect (${personaName}). Judge ONLY what was actually said in the transcript — never assume or infer beyond it. Determine whether each of these four things was genuinely established:
+
+1. specificProblem — a specific, concrete problem was named (not a vague "things could improve")
+2. costOfInaction — what happens if the problem isn't fixed was discussed (cost in time, money, risk, or consequence)
+3. approverIdentified — who else needs to approve/sign off was discussed, OR the prospect confirmed they alone decide
+4. timelineIdentified — a real timeline, deadline, or trigger forcing action was mentioned (not "someday")
+
+Respond with ONLY a JSON object, no markdown fences, no other text:
+{"specificProblem": boolean, "costOfInaction": boolean, "approverIdentified": boolean, "timelineIdentified": boolean}`,
+    },
+    {
+      role: "user",
+      content: `TRANSCRIPT:\n${dialogue}\n\nReturn the JSON classification now.`,
+    },
+  ];
+
+  const { text } = await callLLM(classifierMessages, { temperature: 0, max_tokens: 150 });
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(match[0]);
+    return isQualificationGates(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Premature-commitment correction ──────────────────────────────────────────
+// The gate above can correctly withhold booked:true and the booking token, but
+// if the persona's own drafted reply already said "Yes, Tuesday works!" and we
+// just show that text anyway, the trainee sees the AI agree to a meeting that
+// the backend just refused to honor — that IS false information, not a harmless
+// display quirk. So when the gate fails, the displayed text must never claim a
+// commitment either. Try an in-character rewrite first; if that still reads as
+// a commitment (or the rewrite call fails), fall back to a guaranteed-safe,
+// generic non-committal line rather than ever showing a false "yes."
+
+const SAFE_NON_COMMITTAL_FALLBACK =
+  "Look, I'm not ready to commit to anything specific yet — let's keep talking this through first.";
+
+async function regenerateNonCommittalResponse(
+  callHistory: Array<{ role: string; content: string }>,
+  draftResponse: string,
+  reason: string,
+  params: { temperature: number; max_tokens: number }
+): Promise<string> {
+  const correctionMessages = [
+    ...callHistory,
+    { role: "assistant", content: draftResponse },
+    {
+      role: "user",
+      content: `[SYSTEM CORRECTION — not part of the roleplay, never acknowledge or reference this message] Your previous reply committed to a specific meeting or booking before it was actually earned in this conversation (${reason}). This overrides any earlier instruction that told you to commit. Rewrite that reply, staying fully in character with the same tone and any pain points already discussed, but do NOT agree to a meeting, do NOT name a day or time, and do NOT confirm a next step. Instead do ONE of: raise the specific missing thing as your own genuine remaining doubt or objection, propose a smaller step ("send me something over email first"), or give a polite non-committal answer. Output ONLY the corrected in-character reply — nothing else, no preamble, no explanation.`,
+    },
+  ];
+
+  const { text } = await callLLM(correctionMessages, {
+    temperature: Math.min(params.temperature, 0.6),
+    max_tokens: params.max_tokens,
+  });
+  return validateResponse(text);
 }
 
 // ─── POST handler ─────────────────────────────────────────────────────────────
 
 export async function POST(request: Request) {
+  const limited = rateLimit(request, "roleplay-chat", 60, 60_000);
+  if (limited) return limited;
+
   try {
     const body = await request.json();
     const { sessionId, message, personaId, userName } = body;
@@ -430,6 +678,7 @@ export async function POST(request: Request) {
     }
 
     const convKey = sessionId || personaId;
+    touchSession(convKey);
 
     // ── Conversation history ──────────────────────────────────────────────────
     let history = conversations.get(convKey) || [];
@@ -501,16 +750,79 @@ export async function POST(request: Request) {
     // ── LLM call ──────────────────────────────────────────────────────────────
     const { text: rawResponse, provider } = await callLLM(callHistory, params);
 
-    // ── Anti-hallucination output validation ──────────────────────────────────
-    const aiResponse = validateResponse(rawResponse);
-    if (aiResponse !== rawResponse && rawResponse !== "[no response]") {
+    // ── Anti-hallucination + anti-slop output validation ───────────────────────
+    let aiResponse = validateResponse(rawResponse);
+    const wasSanitized = aiResponse !== rawResponse && rawResponse !== "[no response]";
+    if (wasSanitized) {
       console.warn(`[hallucination] Cleaned response for ${personaId} (${provider}): ${rawResponse.slice(0, 100)}...`);
+    }
+
+    // Don't let the persona repeat the exact same opening interjection two turns running
+    const previousAssistantTurn = [...history].reverse().find(m => m.role === "assistant")?.content;
+    aiResponse = dedupeOpeningInterjection(aiResponse, previousAssistantTurn);
+
+    // ── Booking qualification — MUST run before this reply is shown or stored ──
+    // If the draft reply already commits to a meeting, we cannot let that text
+    // reach the trainee unless the gate agrees it was earned — otherwise the
+    // trainee sees the AI "agree" to a booking the backend then silently
+    // refuses to honor, which is false information, not just an unissued token.
+    const draftBookingMatch = detectBooking(aiResponse);
+    let isBooked = false;
+    let bookingGateDetail = "";
+    let correctedForPrematureBooking = false;
+
+    if (draftBookingMatch) {
+      const stageEarned = stage === "consideration" || stage === "closing";
+      if (!stageEarned) {
+        bookingGateDetail = `stage not earned (${stage})`;
+      } else {
+        try {
+          const transcriptForClassifier = [...history, { role: "assistant", content: aiResponse }];
+          const gates = await classifyBookingQualification(transcriptForClassifier, persona.name);
+          if (gates) {
+            const gatesMet = [
+              gates.specificProblem,
+              gates.costOfInaction,
+              gates.approverIdentified,
+              gates.timelineIdentified,
+            ].filter(Boolean).length;
+            isBooked = gatesMet >= MIN_GATES_FOR_BOOKING;
+            bookingGateDetail = `semantic gates ${gatesMet}/4 (problem=${gates.specificProblem}, cost=${gates.costOfInaction}, approver=${gates.approverIdentified}, timeline=${gates.timelineIdentified})`;
+          } else {
+            isBooked = isQualifiedForBooking(stage, state.unlockedPains, state.qualityTurns);
+            bookingGateDetail = `classifier unparseable — used proxy fallback (result=${isBooked})`;
+          }
+        } catch (err) {
+          isBooked = isQualifiedForBooking(stage, state.unlockedPains, state.qualityTurns);
+          bookingGateDetail = `classifier error (${err instanceof Error ? err.message : "unknown"}) — used proxy fallback (result=${isBooked})`;
+        }
+      }
+
+      if (!isBooked) {
+        try {
+          const corrected = await regenerateNonCommittalResponse(callHistory, aiResponse, bookingGateDetail, params);
+          // Guarantee, don't just hope: if the rewrite still reads as a commitment, hard-swap to a safe line
+          aiResponse = detectBooking(corrected) ? SAFE_NON_COMMITTAL_FALLBACK : corrected;
+        } catch (err) {
+          aiResponse = SAFE_NON_COMMITTAL_FALLBACK;
+          console.warn(
+            `[booking-gate] Correction rewrite failed for ${personaId} (${err instanceof Error ? err.message : "unknown"}) — used generic safe fallback`
+          );
+        }
+        correctedForPrematureBooking = true;
+      }
+    }
+
+    if (correctedForPrematureBooking) {
+      console.warn(`[booking-gate] Rewrote premature commitment for ${personaId}: ${bookingGateDetail}`);
+    } else if (isBooked) {
+      console.log(`[booking-gate] Booking earned for ${personaId}: ${bookingGateDetail}`);
     }
 
     history.push({ role: "assistant", content: aiResponse });
     conversations.set(convKey, history);
 
-    // ── Update session state from AI response ─────────────────────────────────
+    // ── Update session state from the FINAL response actually shown ───────────
     const admission = detectPainAdmission(aiResponse);
     const newUnlockedPains =
       admission && !state.unlockedPains.some(p => p.slice(0, 40) === admission.slice(0, 40))
@@ -542,7 +854,6 @@ export async function POST(request: Request) {
       ? extractMemories(message, aiResponse, personaId, persona.name).length
       : 0;
 
-    const isBooked = detectBooking(aiResponse);
     return NextResponse.json({
       success: true,
       response: aiResponse,
@@ -552,8 +863,7 @@ export async function POST(request: Request) {
       booked: isBooked,
       ...(isBooked ? { bookingToken: generateBookingToken(convKey) } : {}),
       memory: storedMemoryCount > 0 ? { stored: storedMemoryCount } : undefined,
-      // Emit hallucination warning to frontend if text was cleaned
-      ...(aiResponse !== rawResponse && rawResponse !== "[no response]" ? { sanitized: true } : {}),
+      ...(wasSanitized ? { sanitized: true } : {}),
     });
   } catch (error: unknown) {
     const detail = error instanceof Error ? error.message : "Unknown error";
@@ -583,6 +893,7 @@ export async function DELETE(request: Request) {
     if (sessionId) {
       conversations.delete(sessionId);
       sessionStates.delete(sessionId);
+      lastAccessed.delete(sessionId);
     }
     return NextResponse.json({ success: true });
   } catch {

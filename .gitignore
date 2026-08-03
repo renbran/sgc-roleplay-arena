@@ -86,3 +86,6 @@ Tempopencodeauth-*.png
 
 # Local Netlify folder
 .netlify
+
+.vercel
+.env*

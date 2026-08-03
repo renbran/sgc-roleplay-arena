@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { rateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -114,6 +115,9 @@ async function callGroqASR(audioBase64: string, mimeType = "audio/webm"): Promis
 }
 
 export async function POST(req: NextRequest) {
+  const limited = rateLimit(req, "roleplay-asr", 60, 60_000);
+  if (limited) return limited;
+
   try {
     const { audio, mimeType } = await req.json();
 
