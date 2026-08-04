@@ -1,8 +1,8 @@
 // OpenCode Zen LLM provider (free tier, OpenAI-compatible).
 //
-// STATUS: validated and wired in as the THIRD tier (Groq → Mistral → Zen) in
-// src/app/api/roleplay/chat/route.ts. Only reached if both Groq and Mistral
-// fail on a given turn.
+// STATUS: validated and wired in as the PRIMARY tier (Zen → Mistral → Groq)
+// in src/app/api/roleplay/chat/route.ts, per explicit product decision.
+// Mistral and Groq are only reached if Zen fails or returns empty on a turn.
 //
 // ROOT CAUSE OF EARLIER 403s (resolved): every free model returned HTTP 403
 // with body "error code: 1010" — a Cloudflare WAF bot-signature block, NOT an
