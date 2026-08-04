@@ -234,6 +234,10 @@ export default function Home() {
   const [autoScore, setAutoScore] = useState<AutoScore | null>(null);
   const [isScoring, setIsScoring] = useState(false);
   const [scoreFailed, setScoreFailed] = useState(false);
+  // Set when the POST to /api/scores fails — the score is kept in the pending
+  // localStorage backup so it can be retried, never silently dropped.
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const savingRef = useRef(false);
 
   // Lead capture form state (shown after booking)
   const [showLeadForm, setShowLeadForm] = useState(false);
@@ -1162,6 +1166,7 @@ export default function Home() {
     if (scorableMessages.length < 4) return;
     setIsScoring(true);
     setScoreFailed(false);
+    setSaveError(null);
     try {
       const res = await fetch("/api/roleplay/score", {
         method: "POST",
@@ -1200,8 +1205,11 @@ export default function Home() {
     triggerAutoScore();
   };
 
-  const persistScore = useCallback((score: AutoScore) => {
-    if (!selectedPersona || !userName) return;
+  const persistScore = useCallback(async (score: AutoScore): Promise<boolean> => {
+    if (!selectedPersona || !userName) return false;
+    if (savingRef.current) return false;
+    savingRef.current = true;
+    setSaveError(null);
     const record: ScoreRecord = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       userName,
@@ -1218,40 +1226,55 @@ export default function Home() {
       outcome: score.outcome,
       summary: score.summary,
     };
-    setSavedScores(prev => {
-      const updated = [record, ...prev].slice(0, 200);
-      try {
-        localStorage.setItem(SCORES_STORAGE_KEY, JSON.stringify(updated));
-        localStorage.removeItem(PENDING_SCORE_KEY);
-        localStorage.removeItem(ACTIVE_SESSION_KEY);
-      } catch { /* storage full */ }
-      return updated;
-    });
-    fetch("/api/scores", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userName,
-        personaId: selectedPersona.id,
-        personaName: selectedPersona.name,
-        difficulty: selectedPersona.difficulty,
-        rapport: score.rapport,
-        discovery: score.discovery,
-        objectionHandling: score.objectionHandling,
-        closing: score.closing,
-        overall: score.overall,
-        grade: score.grade,
-        outcome: score.outcome,
-        summary: score.summary,
-        strengths: score.strengths,
-        improvements: score.improvements,
-        duration: callTimer,
-      }),
-    }).catch(() => {});
+    try {
+      const res = await fetch("/api/scores", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userName,
+          personaId: selectedPersona.id,
+          personaName: selectedPersona.name,
+          difficulty: selectedPersona.difficulty,
+          rapport: score.rapport,
+          discovery: score.discovery,
+          objectionHandling: score.objectionHandling,
+          closing: score.closing,
+          overall: score.overall,
+          grade: score.grade,
+          outcome: score.outcome,
+          summary: score.summary,
+          strengths: score.strengths,
+          improvements: score.improvements,
+          duration: callTimer,
+        }),
+      });
+      if (!res.ok) {
+        setSaveError("Couldn't save your score right now — it's backed up and will be offered again. Please try again.");
+        return false;
+      }
+      setSavedScores(prev => {
+        const updated = [record, ...prev].slice(0, 200);
+        try {
+          localStorage.setItem(SCORES_STORAGE_KEY, JSON.stringify(updated));
+          localStorage.removeItem(PENDING_SCORE_KEY);
+          localStorage.removeItem(ACTIVE_SESSION_KEY);
+        } catch { /* storage full */ }
+        return updated;
+      });
+      return true;
+    } catch {
+      setSaveError("Couldn't save your score right now — it's backed up and will be offered again. Please try again.");
+      return false;
+    } finally {
+      savingRef.current = false;
+    }
   }, [selectedPersona, userName, callTimer]);
 
   const handleSaveEndSession = async () => {
-    if (autoScore) persistScore(autoScore);
+    if (autoScore) {
+      const saved = await persistScore(autoScore);
+      if (!saved) return;
+    }
     try { localStorage.removeItem(ACTIVE_SESSION_KEY); } catch { /* ignore */ }
     await endRoleplay(endOutcome);
     setShowEndDialog(false);
@@ -1462,41 +1485,44 @@ export default function Home() {
           <div className="flex items-center gap-2 self-end sm:self-auto sm:shrink-0">
             <Button size="sm" variant="outline" className="border-amber-300 text-amber-800 hover:bg-amber-100 h-7 text-xs" onClick={() => {
               setPendingScoreRecovery(null);
-              try { localStorage.removeItem(PENDING_SCORE_KEY); } catch { /* ignore */ }
             }}>Dismiss</Button>
-            <Button size="sm" className="bg-amber-600 hover:bg-amber-700 h-7 text-xs gap-1" onClick={() => {
+            <Button size="sm" className="bg-amber-600 hover:bg-amber-700 h-7 text-xs gap-1" disabled={savingRef.current} onClick={async () => {
               const ps = pendingScoreRecovery;
-              const record: ScoreRecord = {
-                id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                userName: ps.userName,
-                personaId: ps.personaId,
-                personaName: ps.personaName,
-                date: ps.date,
-                duration: ps.duration,
-                rapport: ps.score.rapport,
-                discovery: ps.score.discovery,
-                objectionHandling: ps.score.objectionHandling,
-                closing: ps.score.closing,
-                overall: ps.score.overall,
-                grade: ps.score.grade,
-                outcome: ps.score.outcome,
-                summary: ps.score.summary,
-              };
-              setSavedScores(prev => {
-                const updated = [record, ...prev].slice(0, 200);
-                try {
-                  localStorage.setItem(SCORES_STORAGE_KEY, JSON.stringify(updated));
-                  localStorage.removeItem(PENDING_SCORE_KEY);
-                } catch { /* storage full */ }
-                return updated;
-              });
-              fetch("/api/scores", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
+              if (!ps || savingRef.current) return;
+              savingRef.current = true;
+              setSaveError(null);
+              try {
+                const res = await fetch("/api/scores", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    userName: ps.userName,
+                    personaId: ps.personaId,
+                    personaName: ps.personaName,
+                    rapport: ps.score.rapport,
+                    discovery: ps.score.discovery,
+                    objectionHandling: ps.score.objectionHandling,
+                    closing: ps.score.closing,
+                    overall: ps.score.overall,
+                    grade: ps.score.grade,
+                    outcome: ps.score.outcome,
+                    summary: ps.score.summary,
+                    strengths: ps.score.strengths,
+                    improvements: ps.score.improvements,
+                    duration: ps.duration,
+                  }),
+                });
+                if (!res.ok) {
+                  setSaveError("Couldn't save your score right now — it's still backed up. Please try again.");
+                  return;
+                }
+                const record: ScoreRecord = {
+                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                   userName: ps.userName,
                   personaId: ps.personaId,
                   personaName: ps.personaName,
+                  date: ps.date,
+                  duration: ps.duration,
                   rapport: ps.score.rapport,
                   discovery: ps.score.discovery,
                   objectionHandling: ps.score.objectionHandling,
@@ -1505,16 +1531,31 @@ export default function Home() {
                   grade: ps.score.grade,
                   outcome: ps.score.outcome,
                   summary: ps.score.summary,
-                  strengths: ps.score.strengths,
-                  improvements: ps.score.improvements,
-                  duration: ps.duration,
-                }),
-              }).catch(() => {});
-              setPendingScoreRecovery(null);
+                };
+                setSavedScores(prev => {
+                  const updated = [record, ...prev].slice(0, 200);
+                  try {
+                    localStorage.setItem(SCORES_STORAGE_KEY, JSON.stringify(updated));
+                    localStorage.removeItem(PENDING_SCORE_KEY);
+                  } catch { /* storage full */ }
+                  return updated;
+                });
+                setPendingScoreRecovery(null);
+              } catch {
+                setSaveError("Couldn't save your score right now — it's still backed up. Please try again.");
+              } finally {
+                savingRef.current = false;
+              }
             }}>
               <CheckCircle2 className="w-3 h-3" /> Save Score
             </Button>
           </div>
+        </div>
+      )}
+      {saveError && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <AlertCircle className="w-4 h-4 shrink-0 text-red-500" />
+          <span>{saveError}</span>
         </div>
       )}
       {/* Hero */}
@@ -2443,6 +2484,13 @@ export default function Home() {
             )}
           </div>
 
+          {saveError && (
+            <div className="flex items-center gap-2 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">
+              <AlertCircle className="w-4 h-4 shrink-0 text-red-500" />
+              <span>{saveError}</span>
+            </div>
+          )}
+
           <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             {scoreFailed && !autoScore && !isScoring && !tooShort && (
               <Button variant="outline" onClick={triggerAutoScore} className="w-full gap-1 text-amber-700 border-amber-300 hover:bg-amber-50 sm:w-auto">
@@ -2456,7 +2504,7 @@ export default function Home() {
             ) : (
               <>
                 <Button variant="outline" onClick={() => setShowEndDialog(false)} disabled={isScoring} className="w-full sm:w-auto">Cancel</Button>
-                <Button onClick={handleSaveEndSession} className="w-full gap-1 sm:w-auto" disabled={isScoring}>
+                <Button onClick={handleSaveEndSession} className="w-full gap-1 sm:w-auto" disabled={isScoring || (scoreFailed && !autoScore)}>
                   <CheckCircle2 className="w-4 h-4" /> Save & Close
                 </Button>
               </>
