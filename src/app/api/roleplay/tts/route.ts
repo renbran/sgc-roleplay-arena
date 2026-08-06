@@ -46,35 +46,53 @@ const DEEPGRAM_VOICE_MAP: Record<string, string> = {
 };
 
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || "";
+const HF_TTS_URL = process.env.HF_TTS_URL || ""; // e.g. "http://localhost:8765" — self-hosted HF speech wrapper
+const HF_INTERNAL_TOKEN = process.env.HF_INTERNAL_TOKEN || ""; // shared secret with HF wrapper (hex-only, generate: openssl rand -hex 32)
 
-// ─── ZAI TTS (Fallback) ──────────────────────────────────────────────────────
+// Deepgram voice ID → Kokoro voice ID mapping (Kokoro has 10 voices: 4 AF, 2 AM, 2 BF, 2 BM)
+const DEEPGRAM_TO_KOKORO: Record<string, string> = {
+  "aura-2-apollo-en": "am_adam",    // p1_faisal — male
+  "aura-2-orion-en": "am_michael",   // p3_omar — male
+  "aura-2-arcas-en": "af_sarah",     // p4_rajesh — female
+  "aura-2-atlas-en": "af_bella",     // p5_imran — female
+  "aura-2-zeus-en": "am_adam",       // p6_vikram — male
+  "aura-2-athena-en": "af_nicole",   // p2_noura — female
+  "aura-2-hera-en": "af_sky",        // p7_sarah — female
+  "aura-2-asteria-en": "af_sarah",   // p10_maricel — female
+  "aura-2-cora-en": "bf_emma",       // p11_dana — female (British)
+  "aura-2-helios-en": "am_michael",  // p12 — male
+  "aura-2-luna-en": "bf_isabella",   // p13 — female (British)
+  "aura-2-stella-en": "af_bella",    // p8 — female
+};
 
-const VALID_ZAI_VOICES = new Set([
-  "tongtong", "chuichui", "xiaochen", "jam", "kazi", "douji", "luodo",
-]);
+// ─── HF Speech Wrapper TTS (Primary when configured) ────────────────────────
 
-function mapZaiVoice(voice: string): string {
-  if (VALID_ZAI_VOICES.has(voice)) return voice;
-  const legacyMap: Record<string, string> = {
-    "aura-2-cora-en": "kazi",
-    "aura-2-amalthea-en": "tongtong",
-    "aura-2-orion-en": "jam",
-    "aura-2-apollo-en": "jam",
-    "aura-2-arcas-en": "xiaochen",
-    "aura-2-luna-en": "tongtong",
-    "aura-2-helios-en": "douji",
-    "aura-2-atlas-en": "xiaochen",
-  };
-  return legacyMap[voice] || "kazi";
+function kokoroVoice(voice: string): string {
+  return DEEPGRAM_TO_KOKORO[voice] ?? "af_sarah"; // fallback to default female voice
 }
 
-let zaiInstance: any = null;
-async function getZAI() {
-  if (!zaiInstance) {
-    const ZAI = (await import("z-ai-web-dev-sdk")).default;
-    zaiInstance = await ZAI.create();
-  }
-  return zaiInstance;
+async function callHfTTS(text: string, voice: string): Promise<Buffer> {
+  if (!HF_TTS_URL) throw new Error("HF_TTS_URL not configured");
+
+  const kokoroVoiceId = kokoroVoice(voice);
+  return withRetry(async () => {
+    const baseUrl = HF_TTS_URL.replace(/\/+$/, "");
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (HF_INTERNAL_TOKEN) headers["X-Internal-Token"] = HF_INTERNAL_TOKEN;
+    const response = await fetch(`${baseUrl}/v1/tts`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text, voice: kokoroVoiceId }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`HF TTS failed (${response.status}): ${errorBody}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(new Uint8Array(arrayBuffer));
+  }, 2, 1500);
 }
 
 // ─── Helper: Split text into chunks ──────────────────────────────────────────
@@ -214,55 +232,6 @@ async function generateDeepgramChunk(text: string, model: string): Promise<Buffe
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ZAI TTS — Fallback engine
-// ═══════════════════════════════════════════════════════════════════════════════
-
-async function callZaiTTS(text: string, voice: string): Promise<Buffer> {
-  const zaiVoice = mapZaiVoice(voice);
-  const chunks = splitTextIntoChunks(text, 900);
-
-  return withRetry(async () => {
-    if (chunks.length === 1) {
-      return await generateZaiChunk(text, zaiVoice);
-    }
-
-    const pcmBuffers: Buffer[] = [];
-    let totalDataLength = 0;
-    let sampleRate = 24000;
-    let numChannels = 1;
-    let bitsPerSample = 16;
-
-    for (const chunk of chunks) {
-      const wavBuf = await generateZaiChunk(chunk, zaiVoice);
-      const { pcm, sampleRate: sr, numChannels: nc, bitsPerSample: bps } = extractPCMFromWAV(wavBuf);
-      pcmBuffers.push(pcm);
-      totalDataLength += pcm.length;
-      if (pcmBuffers.length === 1) {
-        sampleRate = sr;
-        numChannels = nc;
-        bitsPerSample = bps;
-      }
-    }
-
-    const allPCM = Buffer.concat(pcmBuffers, totalDataLength);
-    return buildWAV(allPCM, sampleRate, numChannels, bitsPerSample);
-  }, 2, 1500);
-}
-
-async function generateZaiChunk(text: string, voice: string): Promise<Buffer> {
-  const zai = await getZAI();
-  const response = await zai.audio.tts.create({
-    input: text,
-    voice: voice,
-    speed: 1.0,
-    response_format: "wav",
-    stream: false,
-  });
-  const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(new Uint8Array(arrayBuffer));
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // WAV Utilities — Extract PCM / Build WAV headers
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -343,20 +312,25 @@ export async function POST(req: NextRequest) {
     let audioBuffer: Buffer;
     let usedProvider = "deepgram";
 
-    // ── Try Deepgram TTS first (11 distinct persona voices) ──
-    if (DEEPGRAM_API_KEY) {
+    if (HF_TTS_URL) {
       try {
+        audioBuffer = await callHfTTS(truncatedText, voice);
+        usedProvider = "hf";
+      } catch (hfError) {
+        console.warn("[tts] HF TTS failed, falling back to Deepgram:", hfError instanceof Error ? hfError.message : hfError);
+        if (!DEEPGRAM_API_KEY) throw hfError;
         const effectivePersonaId = personaId || resolvePersonaIdFromVoice(voice);
         audioBuffer = await callDeepgramTTS(truncatedText, effectivePersonaId);
-      } catch (dgError) {
-        console.warn("[tts] Deepgram TTS failed, falling back to ZAI:", dgError instanceof Error ? dgError.message : dgError);
-        usedProvider = "zai";
-        audioBuffer = await callZaiTTS(truncatedText, voice);
+        usedProvider = "deepgram";
       }
+    } else if (DEEPGRAM_API_KEY) {
+      const effectivePersonaId = personaId || resolvePersonaIdFromVoice(voice);
+      audioBuffer = await callDeepgramTTS(truncatedText, effectivePersonaId);
     } else {
-      // No Deepgram API key — use ZAI directly
-      usedProvider = "zai";
-      audioBuffer = await callZaiTTS(truncatedText, voice);
+      return NextResponse.json(
+        { error: "No TTS provider configured (set HF_TTS_URL or DEEPGRAM_API_KEY)" },
+        { status: 503 }
+      );
     }
 
     return new NextResponse(new Uint8Array(audioBuffer), {
@@ -397,9 +371,8 @@ function resolvePersonaIdFromVoice(voice: string): string {
 
 // Warmup endpoint
 export async function GET() {
-  const results: { deepgram: boolean; zai: boolean } = { deepgram: false, zai: false };
+  const results: { deepgram: boolean; hf: boolean } = { deepgram: false, hf: false };
 
-  // Test Deepgram connectivity
   if (DEEPGRAM_API_KEY) {
     try {
       const url = `https://api.deepgram.com/v1/speak?model=aura-2-asteria-en&encoding=linear16&container=wav`;
@@ -417,16 +390,18 @@ export async function GET() {
     }
   }
 
-  // Test ZAI connectivity
-  try {
-    await getZAI();
-    results.zai = true;
-  } catch {
-    results.zai = false;
+  if (HF_TTS_URL) {
+    try {
+      const baseUrl = HF_TTS_URL.replace(/\/+$/, "");
+      const response = await fetch(`${baseUrl}/health`, { method: "GET" });
+      results.hf = response.ok;
+    } catch {
+      results.hf = false;
+    }
   }
 
   return NextResponse.json({
-    warmup: results.deepgram || results.zai,
+    warmup: results.hf || results.deepgram,
     providers: results,
   });
 }
