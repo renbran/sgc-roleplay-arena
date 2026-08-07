@@ -1133,6 +1133,48 @@ export default function Home() {
     }
   }, [fetchSessions, isAuthenticated, fetchLeaderboard]);
 
+  // History tab previously only showed whatever happened to be cached in this
+  // browser's localStorage — nothing from the DB, so switching devices or
+  // clearing storage lost your own history. Pull the real record from the
+  // server and merge it in (server data wins on id collisions).
+  const fetchHistory = useCallback(async () => {
+    if (!userName) return;
+    try {
+      const res = await fetch(`/api/scores?userName=${encodeURIComponent(userName)}&limit=100`);
+      const data = await res.json();
+      if (!data.success || !Array.isArray(data.scores)) return;
+      const serverRecords: ScoreRecord[] = data.scores.map((s: {
+        id: string; userName: string; personaId: string; personaName: string; createdAt: string;
+        duration: number; rapport: number; discovery: number; objectionHandling: number; closing: number;
+        overall: number; grade: string; outcome: string; summary?: string;
+      }) => ({
+        id: s.id,
+        userName: s.userName,
+        personaId: s.personaId,
+        personaName: s.personaName,
+        date: s.createdAt,
+        duration: s.duration,
+        rapport: s.rapport,
+        discovery: s.discovery,
+        objectionHandling: s.objectionHandling,
+        closing: s.closing,
+        overall: s.overall,
+        grade: s.grade as ScoreRecord["grade"],
+        outcome: (s.outcome === "won" ? "booked" : s.outcome) as ScoreRecord["outcome"],
+        summary: s.summary || "",
+      }));
+      setSavedScores(prev => {
+        const byId = new Map(prev.map(r => [r.id, r]));
+        for (const rec of serverRecords) byId.set(rec.id, rec);
+        return Array.from(byId.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 200);
+      });
+    } catch { /* history stays on whatever local data is already loaded */ }
+  }, [userName]);
+
+  useEffect(() => {
+    if (view === "history" && userName) fetchHistory();
+  }, [view, userName, fetchHistory]);
+
   // Auto-scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });

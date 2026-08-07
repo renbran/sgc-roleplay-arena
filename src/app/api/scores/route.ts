@@ -25,6 +25,7 @@ export async function GET(req: NextRequest) {
     const limit = Math.min(Number(searchParams.get("limit")) || 50, 100);
     const timeframe = searchParams.get("timeframe") || "all";
     const personaId = searchParams.get("personaId") || "";
+    const userName = searchParams.get("userName")?.trim() || "";
 
     let dateFilter: Date | undefined;
     const now = new Date();
@@ -39,10 +40,13 @@ export async function GET(req: NextRequest) {
     const where: Record<string, unknown> = {};
     if (dateFilter) where.createdAt = { gte: dateFilter };
     if (personaId) where.personaId = personaId;
+    if (userName) where.userName = userName;
 
+    // A userName filter means "my history" (most recent first, everything
+    // including the summary) rather than the leaderboard's rank-by-score view.
     const scores = await db.score.findMany({
       where,
-      orderBy: { overall: "desc" },
+      orderBy: userName ? { createdAt: "desc" } : { overall: "desc" },
       take: limit,
       select: {
         id: true,
@@ -59,6 +63,7 @@ export async function GET(req: NextRequest) {
         objectionHandling: true,
         closing: true,
         difficulty: true,
+        ...(userName ? { summary: true } : {}),
       },
     });
 
