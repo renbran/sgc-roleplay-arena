@@ -50,6 +50,7 @@ export const dynamic = "force-dynamic";
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const MISTRAL_API_KEY = process.env.MISTRAL_API_KEY || "";
 const OPENCODE_API_KEY = process.env.OPENCODE_API_KEY || "";
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 const BOOKING_TOKEN_SECRET = process.env.BOOKING_TOKEN_SECRET || "dev-insecure-set-BOOKING_TOKEN_SECRET-in-env";
 
 if (!GROQ_API_KEY && !MISTRAL_API_KEY && !OPENCODE_API_KEY) {
@@ -521,34 +522,55 @@ async function callMistralLLM(
   return result.choices?.[0]?.message?.content || "";
 }
 
+async function callOpenRouterLLM(
+  history: Array<{ role: string; content: string }>,
+  params: { temperature: number; max_tokens: number }
+): Promise<string> {
+  if (!OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY not configured");
+
+  const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "meta-llama/llama-3.3-70b-instruct",
+      messages: history,
+      max_tokens: params.max_tokens,
+      temperature: params.temperature,
+    }),
+  }, PROVIDER_FETCH_TIMEOUT_MS);
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`OpenRouter LLM failed (${response.status}): ${errorBody}`);
+  }
+
+  const result = await response.json();
+  return result.choices?.[0]?.message?.content || "";
+}
+
 async function callLLM(
   history: Array<{ role: string; content: string }>,
   params: { temperature: number; max_tokens: number }
 ): Promise<{ text: string; provider: string }> {
-  if (!GROQ_API_KEY && !MISTRAL_API_KEY && !OPENCODE_API_KEY) {
+  if (!GROQ_API_KEY && !MISTRAL_API_KEY && !OPENCODE_API_KEY && !OPENROUTER_API_KEY) {
     throw new Error(
-      "No LLM provider configured. Set GROQ_API_KEY, MISTRAL_API_KEY, or OPENCODE_API_KEY in the Vercel project Environment Variables, then redeploy."
+      "No LLM provider configured. Set GROQ_API_KEY, MISTRAL_API_KEY, OPENROUTER_API_KEY, or OPENCODE_API_KEY in the Vercel project Environment Variables, then redeploy."
     );
   }
 
   const failures: string[] = [];
 
-  // Tier 1: OpenCode Zen (ling-3.0-flash-free by default). See
-  // src/lib/opencode.ts for the probe data behind this choice. Free-tier
-  // reliability is unproven at sustained volume — a 429 or empty response
-  // falls through to Mistral rather than failing the turn.
-  if (OPENCODE_API_KEY) {
-    try {
-      const text = await callZenLLM(history, params);
-      if (text) return { text, provider: "zen" };
-      failures.push("Zen returned an empty response");
-    } catch (err) {
-      failures.push(err instanceof Error ? err.message : "Zen failed");
-    }
-  } else {
-    failures.push("OPENCODE_API_KEY not set");
-  }
-
+  // Provider order (2026-08-07 probe): Mistral and Groq are the fastest,
+  // cleanest providers. OpenRouter is a genuine third-provider fallback for
+  // real redundancy against any single provider's rate limit or outage. Zen
+  // is deprioritized to last — its only currently-free model (big-pickle)
+  // returns the whole response JSON double-encoded inside .content, and the
+  // previous default (ling-3.0-flash-free) was discontinued by the provider
+  // entirely. Kept as a last-resort attempt rather than removed outright, in
+  // case ZEN_MODEL gets pointed at a working model later.
   if (MISTRAL_API_KEY) {
     try {
       const text = await callMistralLLM(history, params);
@@ -571,6 +593,30 @@ async function callLLM(
     }
   } else {
     failures.push("GROQ_API_KEY not set");
+  }
+
+  if (OPENROUTER_API_KEY) {
+    try {
+      const text = await callOpenRouterLLM(history, params);
+      if (text) return { text, provider: "openrouter" };
+      failures.push("OpenRouter returned an empty response");
+    } catch (err) {
+      failures.push(err instanceof Error ? err.message : "OpenRouter failed");
+    }
+  } else {
+    failures.push("OPENROUTER_API_KEY not set");
+  }
+
+  if (OPENCODE_API_KEY) {
+    try {
+      const text = await callZenLLM(history, params);
+      if (text) return { text, provider: "zen" };
+      failures.push("Zen returned an empty response");
+    } catch (err) {
+      failures.push(err instanceof Error ? err.message : "Zen failed");
+    }
+  } else {
+    failures.push("OPENCODE_API_KEY not set");
   }
 
   throw new Error(`AI response generation failed — all providers unavailable (${failures.join("; ")})`);
