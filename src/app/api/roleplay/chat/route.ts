@@ -79,12 +79,25 @@ function getStageParams(stage: string): { temperature: number; max_tokens: numbe
   }
 }
 
-function resolveStage(messageCount: number, stageFloor: number): string {
+// Easy personas are written to warm up and commit faster (e.g. Andrew Clarke's
+// persona prompt promises "agree to a demo within 5-6 exchanges") but these
+// message-count thresholds used to be identical for every difficulty, so an
+// easy persona could never numerically reach "consideration"/"closing" (the
+// only stages the booking gate honors) fast enough to match its own written
+// behavior. Easy personas now reach each stage in roughly half the messages.
+const STAGE_THRESHOLDS: Record<Persona["difficulty"], { warming: number; discovery: number; consideration: number; closing: number }> = {
+  easy:   { warming: 2, discovery: 4, consideration: 7, closing: 11 },
+  medium: { warming: 4, discovery: 8, consideration: 14, closing: 20 },
+  hard:   { warming: 4, discovery: 8, consideration: 14, closing: 20 },
+};
+
+function resolveStage(messageCount: number, stageFloor: number, difficulty: Persona["difficulty"]): string {
+  const t = STAGE_THRESHOLDS[difficulty] ?? STAGE_THRESHOLDS.medium;
   let countStage = 1;
-  if (messageCount > 20) countStage = 5;
-  else if (messageCount > 14) countStage = 4;
-  else if (messageCount > 8) countStage = 3;
-  else if (messageCount > 4) countStage = 2;
+  if (messageCount > t.closing) countStage = 5;
+  else if (messageCount > t.consideration) countStage = 4;
+  else if (messageCount > t.discovery) countStage = 3;
+  else if (messageCount > t.warming) countStage = 2;
 
   const effective = Math.max(countStage, stageFloor);
   const names = ["", "guarded", "warming", "discovery", "consideration", "closing"];
@@ -401,17 +414,28 @@ function detectBooking(response: string): boolean {
 // which reads the actual transcript for the four Verifiable Buyer Exit
 // Criteria; this proxy only kicks in if that LLM classification call fails.
 
-const MIN_PAINS_FOR_BOOKING = 2;
-const MIN_QUALITY_TURNS_FOR_BOOKING = 3;
+// Easy personas (e.g. Rajesh, Andrew, Dana) are written as prospects who are
+// already leaning toward a meeting — their win conditions never mention
+// needing to pin down an approver or a hard timeline the way hard personas
+// do. Requiring the same bar for every difficulty made "easy" a mislabel:
+// interns were failing to book even the personas designed to be the
+// forgiving on-ramp. These thresholds now scale down for easy.
+const BOOKING_PROXY_THRESHOLDS: Record<Persona["difficulty"], { minPains: number; minQualityTurns: number }> = {
+  easy:   { minPains: 1, minQualityTurns: 2 },
+  medium: { minPains: 2, minQualityTurns: 3 },
+  hard:   { minPains: 2, minQualityTurns: 3 },
+};
 
 function isQualifiedForBooking(
   stage: string,
   unlockedPains: string[],
-  qualityTurns: number
+  qualityTurns: number,
+  difficulty: Persona["difficulty"]
 ): boolean {
+  const t = BOOKING_PROXY_THRESHOLDS[difficulty] ?? BOOKING_PROXY_THRESHOLDS.medium;
   const stageEarned = stage === "consideration" || stage === "closing";
-  const painsSurfaced = unlockedPains.length >= MIN_PAINS_FOR_BOOKING;
-  const sustainedQuality = qualityTurns >= MIN_QUALITY_TURNS_FOR_BOOKING;
+  const painsSurfaced = unlockedPains.length >= t.minPains;
+  const sustainedQuality = qualityTurns >= t.minQualityTurns;
   return stageEarned && painsSurfaced && sustainedQuality;
 }
 
@@ -569,7 +593,14 @@ interface QualificationGates {
   timelineIdentified: boolean;
 }
 
-const MIN_GATES_FOR_BOOKING = 3;
+// Same easy/medium/hard rationale as BOOKING_PROXY_THRESHOLDS above, applied
+// to the semantic 4-gate classifier (specificProblem / costOfInaction /
+// approverIdentified / timelineIdentified). Easy personas only need 2 of 4.
+const MIN_GATES_FOR_BOOKING: Record<Persona["difficulty"], number> = {
+  easy: 2,
+  medium: 3,
+  hard: 3,
+};
 
 function isQualificationGates(value: unknown): value is QualificationGates {
   if (!value || typeof value !== "object") return false;
@@ -666,7 +697,7 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    const { sessionId, message, personaId, userName } = body;
+    const { sessionId, message, personaId, userName, resumeMessages } = body;
 
     if (!message || !personaId) {
       return NextResponse.json({ error: "message and personaId are required" }, { status: 400 });
@@ -681,13 +712,33 @@ export async function POST(request: Request) {
     touchSession(convKey);
 
     // ── Conversation history ──────────────────────────────────────────────────
+    // resumeMessages carries the DB-checkpointed transcript back from the
+    // client. It only matters here when this serverless instance's in-memory
+    // `conversations` Map is cold (new lambda, restart) — that's the only
+    // case where the server has no memory of a session the client believes
+    // is still going. A warm instance already has the real history and takes
+    // priority over whatever the client last checkpointed.
     let history = conversations.get(convKey) || [];
     if (history.length === 0) {
       const nameCtx = userName
         ? `\n\nThe sales rep you are speaking with today is named ${userName}. Use their name occasionally — it makes the conversation feel real.`
         : "";
       history.push({ role: "system", content: persona.systemPrompt.trim() + nameCtx });
-      history.push({ role: "assistant", content: persona.openingLine });
+
+      const validResumeMessages = Array.isArray(resumeMessages)
+        ? resumeMessages.filter(
+            (m): m is { role: "user" | "assistant"; content: string } =>
+              !!m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string"
+          )
+        : [];
+
+      if (validResumeMessages.length > 0) {
+        for (const m of validResumeMessages) {
+          history.push({ role: m.role, content: m.content });
+        }
+      } else {
+        history.push({ role: "assistant", content: persona.openingLine });
+      }
     }
 
     // ── Session state ─────────────────────────────────────────────────────────
@@ -712,7 +763,7 @@ export async function POST(request: Request) {
 
     // ── Resolve stage ─────────────────────────────────────────────────────────
     const messageCount = history.filter(m => m.role === "user").length;
-    const stage = resolveStage(messageCount, state.stageFloor);
+    const stage = resolveStage(messageCount, state.stageFloor, persona.difficulty);
     const exchange = Math.ceil(messageCount / 2);
     const params = getStageParams(stage);
 
@@ -786,14 +837,15 @@ export async function POST(request: Request) {
               gates.approverIdentified,
               gates.timelineIdentified,
             ].filter(Boolean).length;
-            isBooked = gatesMet >= MIN_GATES_FOR_BOOKING;
-            bookingGateDetail = `semantic gates ${gatesMet}/4 (problem=${gates.specificProblem}, cost=${gates.costOfInaction}, approver=${gates.approverIdentified}, timeline=${gates.timelineIdentified})`;
+            const minGates = MIN_GATES_FOR_BOOKING[persona.difficulty] ?? MIN_GATES_FOR_BOOKING.medium;
+            isBooked = gatesMet >= minGates;
+            bookingGateDetail = `semantic gates ${gatesMet}/4 (min ${minGates} for ${persona.difficulty}) (problem=${gates.specificProblem}, cost=${gates.costOfInaction}, approver=${gates.approverIdentified}, timeline=${gates.timelineIdentified})`;
           } else {
-            isBooked = isQualifiedForBooking(stage, state.unlockedPains, state.qualityTurns);
+            isBooked = isQualifiedForBooking(stage, state.unlockedPains, state.qualityTurns, persona.difficulty);
             bookingGateDetail = `classifier unparseable — used proxy fallback (result=${isBooked})`;
           }
         } catch (err) {
-          isBooked = isQualifiedForBooking(stage, state.unlockedPains, state.qualityTurns);
+          isBooked = isQualifiedForBooking(stage, state.unlockedPains, state.qualityTurns, persona.difficulty);
           bookingGateDetail = `classifier error (${err instanceof Error ? err.message : "unknown"}) — used proxy fallback (result=${isBooked})`;
         }
       }

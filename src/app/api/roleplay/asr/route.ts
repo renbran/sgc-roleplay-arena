@@ -48,6 +48,11 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 80
 async function callHfASR(audioBase64: string, mimeType = "audio/webm"): Promise<string> {
   if (!HF_STT_URL) throw new Error("HF_STT_URL not configured");
 
+  // A single CPU Whisper pass reportedly takes ~185s — already at the edge of
+  // the 180s Vercel maxDuration. The default withRetry() maxRetries=3 would
+  // mean a failed first attempt retries into a second ~170s-timeout attempt,
+  // guaranteeing the function gets killed by the platform mid-request rather
+  // than failing cleanly and falling back to Deepgram. One attempt only.
   return withRetry(async () => {
     const audioBuffer = Buffer.from(audioBase64, "base64");
     const ext = mimeType.includes("mp4") ? "mp4" : mimeType.includes("ogg") ? "ogg" : "webm";
@@ -80,7 +85,7 @@ async function callHfASR(audioBase64: string, mimeType = "audio/webm"): Promise<
     }
 
     return transcript;
-  });
+  }, 1, 1500);
 }
 
 async function callDeepgramASR(audioBase64: string, mimeType = "audio/webm"): Promise<string> {

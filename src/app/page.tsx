@@ -251,6 +251,14 @@ export default function Home() {
     userName: string; duration: number; date: string;
   } | null>(null);
 
+  // Server-persisted "resume where I left off" — distinct from the pending
+  // score recovery above (that's a localStorage-only crash guard for an
+  // already-finished-but-unsaved session; this is a still-open conversation
+  // pulled from the DB, so it survives across devices and browser restarts).
+  const [resumableSession, setResumableSession] = useState<{
+    id: string; personaId: string; messages: ChatMessage[]; updatedAt: string; mode: string;
+  } | null>(null);
+
   // TTS state
   const [playingMessageIdx, setPlayingMessageIdx] = useState<number | null>(null);
   const [ttsLoading, setTtsLoading] = useState<number | null>(null);
@@ -268,6 +276,7 @@ export default function Home() {
   const isAudioPlayingRef = useRef(false);
   const playingMessageIdxRef = useRef<number | null>(null);
   const isChatLoadingRef = useRef(false);
+  const chatMessagesRef = useRef<ChatMessage[]>([]);
 
   // Microphone recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -367,6 +376,62 @@ export default function Home() {
   useEffect(() => { userEmailRef.current = userEmail; }, [userEmail]);
   useEffect(() => { userMobileRef.current = userMobile; }, [userMobile]);
   useEffect(() => { leadFormSubmittedRef.current = leadFormSubmitted; }, [leadFormSubmitted]);
+
+  // Check for a still-open conversation to resume, once the user is identified.
+  useEffect(() => {
+    if (!isAuthenticated || (!userEmail && !userName)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/sessions?resumeFor=${encodeURIComponent(userEmail || userName)}`);
+        const data = await res.json();
+        if (cancelled || !data.session) return;
+        const s = data.session;
+        let parsedMessages: ChatMessage[] = [];
+        try {
+          const raw = JSON.parse(s.messages || "[]");
+          if (Array.isArray(raw)) {
+            parsedMessages = raw.filter((m): m is ChatMessage =>
+              m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string"
+            ).map((m) => ({ ...m, timestamp: m.timestamp || Date.now() }));
+          }
+        } catch { /* corrupt transcript — skip resume */ }
+        if (parsedMessages.length === 0) return;
+        setResumableSession({ id: s.id, personaId: s.personaId, messages: parsedMessages, updatedAt: s.updatedAt, mode: s.mode || "text" });
+      } catch { /* resume is best-effort — silently skip */ }
+    })();
+    return () => { cancelled = true; };
+  }, [isAuthenticated, userEmail, userName]);
+
+  const resumeSession = (resume: NonNullable<typeof resumableSession>) => {
+    const persona = PERSONAS.find(p => p.id === resume.personaId);
+    if (!persona) { setResumableSession(null); return; }
+    stopTTS();
+    setTtsError(null);
+    isStoppingRef.current = false;
+    setSessionBooked(false);
+    setAutoScore(null);
+    setIsScoring(false);
+    setSelectedPersona(persona);
+    setMode(resume.mode === "voice" ? "voice" : "text");
+    setInputMode(resume.mode === "voice" ? "voice" : "text");
+    setView("roleplay");
+    setRoleplayStatus("active");
+    setCallTimer(0);
+    setError(null);
+    setSessionNotes("");
+    setSessionStartTime(Date.now());
+    setShowEndDialog(false);
+    setChatSessionId(resume.id);
+    setSessionId(resume.id);
+    setConversationStage("guarded");
+    setChatMessages([
+      { role: "system", content: `Resumed conversation with ${persona.name}.`, timestamp: Date.now() },
+      ...resume.messages,
+    ]);
+    setResumableSession(null);
+    setTimeout(() => chatInputRef.current?.focus(), 300);
+  };
 
   const handleRegistrationSubmit = () => {
     const name = nameInput.trim();
@@ -628,12 +693,35 @@ export default function Home() {
   useEffect(() => {
     isChatLoadingRef.current = isChatLoading;
   }, [isChatLoading]);
+  useEffect(() => {
+    chatMessagesRef.current = chatMessages;
+  }, [chatMessages]);
+
+  // Checkpoint the transcript to the DB so it survives a serverless cold
+  // start or the user closing the tab mid-conversation. Fire-and-forget —
+  // a failed checkpoint just means less to resume from, never a blocker.
+  const checkpointSession = useCallback((id: string, messages: ChatMessage[]) => {
+    const scorable = messages.filter(m => m.role === "user" || m.role === "assistant");
+    if (scorable.length === 0) return;
+    fetch("/api/sessions", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: id, status: "active", messages: scorable }),
+    }).catch(() => { /* best-effort */ });
+  }, []);
 
   // ─── Microphone Recording ───────────────────────────────────────────────────
 
   const sendChatMessageWithText = useCallback(async (text: string, fromVoice = false) => {
     if (!text.trim() || !selectedPersona || isChatLoadingRef.current) return;
     const userMsg = text.trim();
+    // Snapshot before this turn's message is appended — this is what seeds
+    // the server's in-memory history if its Map is cold (see resumeMessages
+    // handling in /api/roleplay/chat). Harmless on a warm instance, which
+    // ignores it.
+    const resumeMessages = chatMessagesRef.current
+      .filter(m => m.role === "user" || m.role === "assistant")
+      .map(m => ({ role: m.role, content: m.content }));
     if (!fromVoice && mode !== "voice") setInputMode("text");
     setChatMessages(prev => [...prev, { role: "user", content: userMsg, timestamp: Date.now() }]);
     setIsChatLoading(true);
@@ -643,7 +731,7 @@ export default function Home() {
       const res = await fetch("/api/roleplay/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: chatSessionId, message: userMsg, personaId: selectedPersona.id, userName }),
+        body: JSON.stringify({ sessionId: chatSessionId, message: userMsg, personaId: selectedPersona.id, userName, resumeMessages }),
       });
       const data = await res.json();
       if (data.success) {
@@ -688,6 +776,7 @@ export default function Home() {
           if (autoVoice && audioUnlockedRef.current) {
             autoPlayIdx = newMessages.length - 1;
           }
+          if (chatSessionId) checkpointSession(chatSessionId, newMessages);
           return newMessages;
         });
 
@@ -720,7 +809,7 @@ export default function Home() {
     }
     setIsChatLoading(false);
     isChatLoadingRef.current = false;
-  }, [selectedPersona, chatSessionId, autoVoice, userName, mode]);
+  }, [selectedPersona, chatSessionId, autoVoice, userName, mode, checkpointSession]);
 
   // ─── Lead form submission (post-booking Odoo provisioning) ──────────────────
 
@@ -1054,6 +1143,26 @@ export default function Home() {
 
   // ─── Roleplay Actions ───────────────────────────────────────────────────────
 
+  // Creates the DB-backed Session row using the same id as chatSessionId, so
+  // the LLM conversation key and the persisted record are the same thing —
+  // no separate correlation needed. Fire-and-forget: a failed create just
+  // means this session won't be resumable later, not that the roleplay fails.
+  const createDbSession = (id: string, personaId: string, roleplayMode: "text" | "voice") => {
+    fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id,
+        personaId,
+        roomName: id,
+        identity: userName || "anonymous",
+        userName: userName || null,
+        userEmail: userEmailRef.current || null,
+        mode: roleplayMode,
+      }),
+    }).catch(() => { /* resumability is best-effort, never blocks the roleplay */ });
+  };
+
   const startTextRoleplay = (persona: Persona) => {
     stopTTS();
     setTtsError(null);
@@ -1073,6 +1182,8 @@ export default function Home() {
     setShowEndDialog(false);
     const sid = `chat-${persona.id}-${Date.now()}`;
     setChatSessionId(sid);
+    setSessionId(sid);
+    createDbSession(sid, persona.id, "text");
     setConversationStage("guarded");
     const openingMsg = { role: "assistant" as const, content: persona.openingLine, timestamp: Date.now() };
     setChatMessages([
@@ -1114,6 +1225,7 @@ export default function Home() {
     const sid = `voice-${persona.id}-${Date.now()}`;
     setChatSessionId(sid);
     setSessionId(sid);
+    createDbSession(sid, persona.id, "voice");
     setConversationStage("guarded");
     const openingMsg = { role: "assistant" as const, content: persona.openingLine, timestamp: Date.now() };
     setChatMessages([
@@ -1147,10 +1259,18 @@ export default function Home() {
 
     if (sessionId) {
       try {
+        const finalMessages = chatMessagesRef.current.filter(m => m.role === "user" || m.role === "assistant");
         await fetch("/api/sessions", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId, status: "completed", duration: callTimer, outcome: outcome || "partial", notes: sessionNotes }),
+          body: JSON.stringify({
+            sessionId,
+            status: "completed",
+            duration: callTimer,
+            outcome: outcome || "partial",
+            notes: sessionNotes,
+            messages: finalMessages,
+          }),
         });
       } catch { /* ignore */ }
     }
@@ -1473,6 +1593,31 @@ export default function Home() {
 
   const renderDashboard = () => (
     <div className="space-y-6 md:space-y-8">
+      {/* Resumable conversation banner */}
+      {resumableSession && (() => {
+        const persona = PERSONAS.find(p => p.id === resumableSession.personaId);
+        const lastMsg = resumableSession.messages[resumableSession.messages.length - 1];
+        if (!persona) return null;
+        return (
+          <div className="flex flex-col gap-3 rounded-lg border border-sky-300 bg-sky-50 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2 text-sky-800 min-w-0">
+              <MessageCircle className="w-4 h-4 shrink-0 text-sky-500 mt-0.5" />
+              <span className="min-w-0">
+                Unfinished conversation with <strong>{persona.name}</strong>
+                {lastMsg ? <span className="text-sky-700"> — &ldquo;{lastMsg.content.slice(0, 80)}{lastMsg.content.length > 80 ? "…" : ""}&rdquo;</span> : null}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 self-end sm:self-auto sm:shrink-0">
+              <Button size="sm" variant="outline" className="border-sky-300 text-sky-800 hover:bg-sky-100 h-7 text-xs" onClick={() => setResumableSession(null)}>
+                Dismiss
+              </Button>
+              <Button size="sm" className="bg-sky-600 hover:bg-sky-700 h-7 text-xs gap-1" onClick={() => resumeSession(resumableSession)}>
+                <RefreshCw className="w-3 h-3" /> Resume
+              </Button>
+            </div>
+          </div>
+        );
+      })()}
       {/* Pending score recovery banner */}
       {pendingScoreRecovery && (
         <div className="flex flex-col gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">

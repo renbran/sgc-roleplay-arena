@@ -12,6 +12,10 @@ model Session {
   personaId     String
   roomName      String
   identity      String
+  userName      String?
+  userEmail     String?
+  mode          String?  // text, voice
+  messages      String?  @db.Text // JSON-serialized transcript, checkpointed as the conversation progresses
   status        String   @default("pending") // pending, active, completed, failed
   duration      Int      @default(0) // seconds
   feedback      String?
@@ -20,6 +24,8 @@ model Session {
   notes         String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+
+  @@index([userEmail, status])
 }
 
 model AgentStatus {
