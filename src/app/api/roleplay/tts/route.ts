@@ -75,24 +75,31 @@ async function callHfTTS(text: string, voice: string): Promise<Buffer> {
   if (!HF_TTS_URL) throw new Error("HF_TTS_URL not configured");
 
   const kokoroVoiceId = kokoroVoice(voice);
-  return withRetry(async () => {
-    const baseUrl = HF_TTS_URL.replace(/\/+$/, "");
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (HF_INTERNAL_TOKEN) headers["X-Internal-Token"] = HF_INTERNAL_TOKEN;
-    const response = await fetch(`${baseUrl}/v1/tts`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ text, voice: kokoroVoiceId }),
-    });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 170_000); // 170s, within 180s Vercel limit
+  try {
+    return await withRetry(async () => {
+      const baseUrl = HF_TTS_URL.replace(/\/+$/, "");
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (HF_INTERNAL_TOKEN) headers["X-Internal-Token"] = HF_INTERNAL_TOKEN;
+      const response = await fetch(`${baseUrl}/v1/tts`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ text, voice: kokoroVoiceId }),
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`HF TTS failed (${response.status}): ${errorBody}`);
-    }
+      if (!response.ok) {
+        const errorBody = await response.text();
+        throw new Error(`HF TTS failed (${response.status}): ${errorBody}`);
+      }
 
-    const arrayBuffer = await response.arrayBuffer();
-    return Buffer.from(new Uint8Array(arrayBuffer));
-  }, 2, 1500);
+      const arrayBuffer = await response.arrayBuffer();
+      return Buffer.from(new Uint8Array(arrayBuffer));
+    }, 1, 1500);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // ─── Helper: Split text into chunks ──────────────────────────────────────────

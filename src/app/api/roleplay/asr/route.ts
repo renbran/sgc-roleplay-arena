@@ -5,7 +5,9 @@ export const dynamic = "force-dynamic";
 
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || "";
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
-const REQUEST_TIMEOUT_MS = 15_000;
+const HF_STT_URL = process.env.HF_STT_URL || ""; // e.g. "http://localhost:8765" — self-hosted HF speech wrapper
+const HF_INTERNAL_TOKEN = process.env.HF_INTERNAL_TOKEN || ""; // shared secret for HF wrapper auth
+const REQUEST_TIMEOUT_MS = 170_000;
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutId: NodeJS.Timeout | null = null;
@@ -41,6 +43,44 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3, baseDelay = 80
     }
   }
   throw lastError;
+}
+
+async function callHfASR(audioBase64: string, mimeType = "audio/webm"): Promise<string> {
+  if (!HF_STT_URL) throw new Error("HF_STT_URL not configured");
+
+  return withRetry(async () => {
+    const audioBuffer = Buffer.from(audioBase64, "base64");
+    const ext = mimeType.includes("mp4") ? "mp4" : mimeType.includes("ogg") ? "ogg" : "webm";
+    const blob = new Blob([audioBuffer], { type: mimeType });
+
+    const formData = new FormData();
+    formData.append("audio", blob, `audio.${ext}`);
+
+    const baseUrl = HF_STT_URL.replace(/\/+$/, "");
+    const response = await withTimeout(
+      fetch(`${baseUrl}/v1/stt`, {
+        method: "POST",
+        ...(HF_INTERNAL_TOKEN ? { headers: { "X-Internal-Token": HF_INTERNAL_TOKEN } } : {}),
+        body: formData,
+      }),
+      REQUEST_TIMEOUT_MS,
+      "HF ASR request"
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`HF ASR failed (${response.status}): ${errorBody}`);
+    }
+
+    const result = await response.json();
+    const transcript = result?.text || "";
+
+    if (!transcript || transcript.trim().length === 0) {
+      throw new Error("HF returned empty transcript");
+    }
+
+    return transcript;
+  });
 }
 
 async function callDeepgramASR(audioBase64: string, mimeType = "audio/webm"): Promise<string> {
@@ -128,19 +168,26 @@ export async function POST(req: NextRequest) {
     let transcript = "";
     let provider = "";
 
-    // Try Deepgram first (primary provider)
-    if (DEEPGRAM_API_KEY) {
+    if (HF_STT_URL) {
       try {
-        transcript = await callDeepgramASR(audio, mimeType || "audio/webm");
-        provider = "deepgram-nova-2";
-        console.log("[asr] Deepgram success:", transcript.substring(0, 50));
+        transcript = await callHfASR(audio, mimeType || "audio/webm");
+        provider = "hf-whisper";
+        console.log("[asr] HF STT success:", transcript.substring(0, 50));
       } catch (err) {
-        console.error("[asr] Deepgram failed:", err instanceof Error ? err.message : err);
-        // Fall through to Groq
+        console.error("[asr] HF STT failed, falling back to Deepgram:", err instanceof Error ? err.message : err);
       }
     }
 
-    // Fallback to Groq if Deepgram failed or not configured
+    if (!transcript && DEEPGRAM_API_KEY) {
+      try {
+        transcript = await callDeepgramASR(audio, mimeType || "audio/webm");
+        provider = "deepgram-nova-2";
+        console.log("[asr] Deepgram fallback success:", transcript.substring(0, 50));
+      } catch (err) {
+        console.error("[asr] Deepgram failed:", err instanceof Error ? err.message : err);
+      }
+    }
+
     if (!transcript && GROQ_API_KEY) {
       try {
         transcript = await callGroqASR(audio, mimeType || "audio/webm");
@@ -148,7 +195,7 @@ export async function POST(req: NextRequest) {
         console.log("[asr] Groq fallback success:", transcript.substring(0, 50));
       } catch (err) {
         console.error("[asr] Groq fallback failed:", err instanceof Error ? err.message : err);
-        throw new Error("Speech recognition failed - both services unavailable");
+        throw new Error("Speech recognition failed - all providers unavailable");
       }
     }
 
