@@ -30,10 +30,14 @@ async function hasBookingWithFallback(opts: {
   });
   if (sessionHit) return true;
 
-  // Fallback: any completed Score with this name counts toward the gate.
-  // This catches anyone whose earlier booking was persisted as a Score
-  // only (no matching Session row) — without it they would be stuck
-  // locked even though they already passed chat.
+  // Fallback ONLY for the chat gate. Score rows don't carry a mode field,
+  // so we can't tell which were voice calls — and the gate semantics are
+  // asymmetric: chat-booking fallback is needed to fix old users whose
+  // Session rows were missing, but call-booking fallback would falsely
+  // unlock voice mode for anyone who ever booked a chat. So fall back
+  // only when checking the chat gate.
+  if (mode !== "text") return false;
+
   const scoreHit = await db.score.findFirst({
     where: {
       userName: identity,
