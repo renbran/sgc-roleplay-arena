@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createHmac, randomBytes, timingSafeEqual } from "crypto";
+import { createHmac, timingSafeEqual } from "crypto";
 import { buildSgcEmail } from "@/lib/booking-utils";
 import { rateLimit } from "@/lib/rate-limit";
 
@@ -9,8 +9,6 @@ const ODOO_URL = process.env.ODOO_URL || "";
 const ODOO_DB = process.env.ODOO_DB || "";
 const ODOO_ADMIN_USER = process.env.ODOO_ADMIN_USER || "admin";
 const ODOO_ADMIN_PASSWORD = process.env.ODOO_ADMIN_PASSWORD || "";
-const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
-const EMAIL_FROM = process.env.EMAIL_FROM || "noreply@sgctech.ai";
 const BOOKING_TOKEN_SECRET = process.env.BOOKING_TOKEN_SECRET || "dev-insecure-set-BOOKING_TOKEN_SECRET-in-env";
 
 // ─── Booking token verification ───────────────────────────────────────────────
@@ -116,31 +114,6 @@ async function xmlRpcCall(url: string, method: string, params: unknown[]): Promi
   return parseXmlRpcResponse(text);
 }
 
-// ─── Credentials email HTML ───────────────────────────────────────────────────
-
-function credentialsEmailHtml(fullName: string, sgcEmail: string, tempPassword: string): string {
-  const loginUrl = ODOO_URL || "https://app.sgctech.ai";
-  return `
-    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;">
-      <h1 style="color:#1e40af;margin-bottom:8px;">Welcome to SGC Tech, ${escapeXml(fullName)}!</h1>
-      <p style="color:#374151;">Your account has been successfully created. Here are your login credentials:</p>
-      <div style="background:#f1f5f9;border-radius:8px;padding:20px;margin:20px 0;border-left:4px solid #1e40af;">
-        <p style="margin:4px 0;"><strong>Login Email:</strong> ${escapeXml(sgcEmail)}</p>
-        <p style="margin:4px 0;"><strong>Temporary Password:</strong>
-          <code style="background:#e2e8f0;padding:2px 6px;border-radius:4px;">${escapeXml(tempPassword)}</code>
-        </p>
-        <p style="margin:4px 0;"><strong>Login URL:</strong>
-          <a href="${loginUrl}" style="color:#1e40af;">${loginUrl}</a>
-        </p>
-      </div>
-      <p style="color:#dc2626;font-weight:bold;">&#9888;&#65039; You will be required to change your password on first login.</p>
-      <p style="color:#6b7280;font-size:14px;">Questions? Contact us at
-        <a href="mailto:info@sgctech.ai">info@sgctech.ai</a>
-      </p>
-    </div>
-  `;
-}
-
 // ─── POST handler ─────────────────────────────────────────────────────────────
 
 export async function POST(request: Request) {
@@ -174,12 +147,16 @@ export async function POST(request: Request) {
     }
 
     const sgcEmail = buildSgcEmail(fullName.trim());
-    // Cryptographically random temp password — never a static default
-    const tempPassword = randomBytes(16).toString("base64url");
 
     console.log(`[booking] Provisioning: ${sgcEmail} (persona=${personaId}, session=${sessionId})`);
 
     // ── Odoo user creation via XML-RPC ────────────────────────────────────────
+    // Credentials delivery: Odoo's own action_reset_password sends the
+    // standard "Set Password" invite email through Odoo's already-configured
+    // outgoing mail infrastructure (verified working — mail.sgctech.ai plus
+    // several fallback SMTP providers). No separate email provider needed
+    // here, and no plaintext temp password to generate or lose track of —
+    // Odoo issues its own signup token.
     if (ODOO_URL && ODOO_DB && ODOO_ADMIN_PASSWORD) {
       try {
         const uid = await xmlRpcCall(`${ODOO_URL}/xmlrpc/2/common`, "authenticate", [
@@ -198,14 +175,19 @@ export async function POST(request: Request) {
           {},
         ]) as number;
 
-        await xmlRpcCall(`${ODOO_URL}/xmlrpc/2/object`, "execute_kw", [
-          ODOO_DB, uid, ODOO_ADMIN_PASSWORD,
-          "res.users", "write",
-          [[newUserId], { password: tempPassword }],
-          {},
-        ]);
-
-        console.log(`[booking] Odoo user created: ${sgcEmail} (id=${newUserId})`);
+        try {
+          await xmlRpcCall(`${ODOO_URL}/xmlrpc/2/object`, "execute_kw", [
+            ODOO_DB, uid, ODOO_ADMIN_PASSWORD,
+            "res.users", "action_reset_password",
+            [[newUserId]],
+            {},
+          ]);
+          console.log(`[booking] Odoo user created + invite sent: ${sgcEmail} (id=${newUserId})`);
+        } catch (inviteErr) {
+          // Non-fatal: the account exists either way; log for manual follow-up
+          // (e.g. an admin can trigger "Reset Password" from the Odoo Users list).
+          console.warn(`[booking] Odoo user created but invite email failed for ${sgcEmail}:`, inviteErr);
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const isDuplicate =
@@ -224,33 +206,6 @@ export async function POST(request: Request) {
       }
     } else {
       console.warn("[booking] Odoo skipped — ODOO_URL, ODOO_DB, or ODOO_ADMIN_PASSWORD not set");
-    }
-
-    // ── Send credentials email via Resend ─────────────────────────────────────
-    // Lazy-import Resend inside the handler so Vercel's static route discovery
-    // (which scans top-level imports at build time) doesn't try to bundle a
-    // Node-only SDK at module init. If the SDK can't be resolved for any
-    // reason, the build emits the route handler anyway and we fall through
-    // to the catch — the user account is still created, the email just
-    // doesn't go out (a manual follow-up is acceptable; the booking itself
-    // is not blocked by email delivery).
-    if (RESEND_API_KEY) {
-      try {
-        const { Resend } = await import("resend");
-        const resend = new Resend(RESEND_API_KEY);
-        await resend.emails.send({
-          from: EMAIL_FROM,
-          to: email.trim(),
-          subject: "Your SGC Tech Account is Ready",
-          html: credentialsEmailHtml(fullName.trim(), sgcEmail, tempPassword),
-        });
-        console.log(`[booking] Credentials email sent to ${email}`);
-      } catch (err) {
-        // Non-fatal: Odoo user exists; log for manual follow-up
-        console.warn("[booking] Resend email failed:", err);
-      }
-    } else {
-      console.warn("[booking] Email skipped — RESEND_API_KEY not set");
     }
 
     return NextResponse.json({ success: true, sgcEmail });

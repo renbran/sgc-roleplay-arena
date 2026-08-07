@@ -259,6 +259,14 @@ export default function Home() {
     id: string; personaId: string; messages: ChatMessage[]; updatedAt: string; mode: string;
   } | null>(null);
 
+  // Global progression gate: one successful CHAT booking (any persona)
+  // unlocks call mode everywhere; one successful CALL booking (any
+  // persona, only reachable after that unlock) triggers account
+  // provisioning. Not per-persona — any persona counts toward either step.
+  const [hasChatBooking, setHasChatBooking] = useState(false);
+  const [hasCallBooking, setHasCallBooking] = useState(false);
+  const [showChatUnlockNotice, setShowChatUnlockNotice] = useState(false);
+
   // TTS state
   const [playingMessageIdx, setPlayingMessageIdx] = useState<number | null>(null);
   const [ttsLoading, setTtsLoading] = useState<number | null>(null);
@@ -402,6 +410,22 @@ export default function Home() {
     })();
     return () => { cancelled = true; };
   }, [isAuthenticated, userEmail, userName]);
+
+  const fetchProgress = useCallback(async () => {
+    const identity = userEmailRef.current || userName;
+    if (!identity) return;
+    try {
+      const res = await fetch(`/api/sessions/progress?identity=${encodeURIComponent(identity)}`);
+      const data = await res.json();
+      if (typeof data.hasChatBooking === "boolean") setHasChatBooking(data.hasChatBooking);
+      if (typeof data.hasCallBooking === "boolean") setHasCallBooking(data.hasCallBooking);
+    } catch { /* best-effort — call mode stays locked until this succeeds */ }
+  }, [userName]);
+
+  useEffect(() => {
+    if (!isAuthenticated || (!userEmail && !userName)) return;
+    fetchProgress();
+  }, [isAuthenticated, userEmail, userName, fetchProgress]);
 
   const resumeSession = (resume: NonNullable<typeof resumableSession>) => {
     const persona = PERSONAS.find(p => p.id === resume.personaId);
@@ -740,32 +764,69 @@ export default function Home() {
         }
         if (data.booked) {
           setBookingToken(data.bookingToken || "");
-          // If user info already collected, auto-submit booking and celebrate
-          if (userEmailRef.current && userMobileRef.current && !leadFormSubmittedRef.current) {
-            fetch("/api/booking/provision", {
-              method: "POST",
+
+          // Persist the outcome immediately — don't wait for an explicit "End
+          // Session" click. The chat->call unlock and call->provisioning gate
+          // both read this from the DB, so it needs to be durable the moment
+          // the booking happens, not just held in React state.
+          if (chatSessionId) {
+            fetch("/api/sessions", {
+              method: "PATCH",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                fullName: userName,
-                email: userEmailRef.current,
-                mobile: userMobileRef.current,
-                personaId: selectedPersona?.id,
-                sessionId: chatSessionId,
-                bookingToken: data.bookingToken || "",
-              }),
-            }).catch(() => { /* non-blocking */ });
-            setLeadFormSubmitted(true);
+              body: JSON.stringify({ sessionId: chatSessionId, status: "active", outcome: "won" }),
+            }).catch(() => { /* best-effort */ });
+          }
+
+          const isCallBooking = mode === "voice";
+
+          if (!isCallBooking) {
+            // Chat booking: this is what unlocks call mode globally — it does
+            // NOT provision an account. Provisioning only happens on a call
+            // booking (see below), which is itself gated behind this unlock.
             setSessionBooked(true);
             setEndOutcome("won");
             fireConfetti();
-            setShowCelebration(true);
-          } else if (!leadFormSubmittedRef.current) {
-            setShowLeadForm(true);
+            if (!hasChatBooking) {
+              setHasChatBooking(true);
+              setShowChatUnlockNotice(true);
+            }
+          } else if (!hasChatBooking) {
+            // Defensive only: the UI gates voice mode behind hasChatBooking,
+            // so this shouldn't be reachable. Celebrate but never provision
+            // off a path that skipped the required chat booking first.
+            setSessionBooked(true);
+            setEndOutcome("won");
+            fireConfetti();
           } else {
-            setSessionBooked(true);
-            setEndOutcome("won");
-            fireConfetti();
-            setShowCelebration(true);
+            // Call booking, chat already passed — this is the one path that
+            // actually provisions the Odoo account.
+            setHasCallBooking(true);
+            if (userEmailRef.current && userMobileRef.current && !leadFormSubmittedRef.current) {
+              fetch("/api/booking/provision", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  fullName: userName,
+                  email: userEmailRef.current,
+                  mobile: userMobileRef.current,
+                  personaId: selectedPersona?.id,
+                  sessionId: chatSessionId,
+                  bookingToken: data.bookingToken || "",
+                }),
+              }).catch(() => { /* non-blocking */ });
+              setLeadFormSubmitted(true);
+              setSessionBooked(true);
+              setEndOutcome("won");
+              fireConfetti();
+              setShowCelebration(true);
+            } else if (!leadFormSubmittedRef.current) {
+              setShowLeadForm(true);
+            } else {
+              setSessionBooked(true);
+              setEndOutcome("won");
+              fireConfetti();
+              setShowCelebration(true);
+            }
           }
         }
 
@@ -809,7 +870,7 @@ export default function Home() {
     }
     setIsChatLoading(false);
     isChatLoadingRef.current = false;
-  }, [selectedPersona, chatSessionId, autoVoice, userName, mode, checkpointSession]);
+  }, [selectedPersona, chatSessionId, autoVoice, userName, mode, checkpointSession, hasChatBooking]);
 
   // ─── Lead form submission (post-booking Odoo provisioning) ──────────────────
 
@@ -1195,6 +1256,7 @@ export default function Home() {
   };
 
   const startVoiceRoleplay = (persona: Persona) => {
+    if (!hasChatBooking) return; // defensive — UI already gates this button
     stopTTS();
     setTtsError(null);
     isStoppingRef.current = false;
@@ -1978,9 +2040,26 @@ export default function Home() {
                     <Button size="sm" className="flex-1 gap-1 text-xs" onClick={() => startTextRoleplay(persona)}>
                       <MessageCircle className="w-3 h-3" /> Chat
                     </Button>
-                    <Button size="sm" variant="outline" className="flex-1 gap-1 text-xs" onClick={() => startVoiceRoleplay(persona)}>
-                      <Phone className="w-3 h-3" /> Voice
-                    </Button>
+                    {hasChatBooking ? (
+                      <Button size="sm" variant="outline" className="flex-1 gap-1 text-xs" onClick={() => startVoiceRoleplay(persona)}>
+                        <Phone className="w-3 h-3" /> Voice
+                      </Button>
+                    ) : (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="flex-1">
+                              <Button size="sm" variant="outline" disabled className="w-full gap-1 text-xs opacity-60 cursor-not-allowed">
+                                <Lock className="w-3 h-3" /> Voice
+                              </Button>
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p className="text-xs max-w-[200px]">Book a meeting via Chat with any persona first to unlock Voice mode.</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
                   </CardFooter>
                 </Card>
               </motion.div>
@@ -3138,6 +3217,38 @@ export default function Home() {
               </Button>
             </DialogFooter>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Chat -> Call unlock notice */}
+      <Dialog open={showChatUnlockNotice} onOpenChange={(open) => {
+        if (!open) setShowChatUnlockNotice(false);
+      }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader className="text-center">
+            <div className="flex justify-center mb-2">
+              <div className="w-20 h-20 rounded-full bg-gradient-to-br from-sky-400 to-sky-600 flex items-center justify-center shadow-lg shadow-sky-500/30">
+                <Phone className="w-9 h-9 text-white" />
+              </div>
+            </div>
+            <DialogTitle className="text-2xl font-bold text-sky-600">Voice mode unlocked!</DialogTitle>
+            <DialogDescription className="text-base mt-2">
+              You booked a meeting via chat — Voice call mode is now available for every persona.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-4 text-center">
+            <div className="bg-sky-50 rounded-lg p-4 border border-sky-200">
+              <p className="text-sm text-sky-800 font-medium">One more step for your account.</p>
+              <p className="text-xs text-sky-600 mt-1">
+                Complete a successful booking in Voice mode to get your SGC Tech account provisioned.
+              </p>
+            </div>
+          </div>
+          <DialogFooter className="justify-center">
+            <Button onClick={() => setShowChatUnlockNotice(false)} className="bg-sky-600 hover:bg-sky-700 text-white min-w-[120px]">
+              Got it
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
