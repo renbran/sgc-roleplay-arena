@@ -17,6 +17,7 @@ interface ScoreBody {
   strengths: string[];
   improvements: string[];
   duration?: number;
+  mode?: string;
 }
 
 export async function GET(req: NextRequest) {
@@ -63,6 +64,7 @@ export async function GET(req: NextRequest) {
         objectionHandling: true,
         closing: true,
         difficulty: true,
+        mode: true,
         ...(userName ? { summary: true } : {}),
       },
     });
@@ -123,6 +125,7 @@ export async function POST(req: NextRequest) {
   const outcome = String(b.outcome);
   const summary = String(b.summary);
   const duration = b.duration ? Number(b.duration) : 0;
+  const mode = b.mode ? String(b.mode) : null;
 
   const strengthsRaw = b.strengths;
   const improvementsRaw = b.improvements;
@@ -160,6 +163,7 @@ export async function POST(req: NextRequest) {
         strengths,
         improvements,
         duration,
+        mode,
       },
     });
 

@@ -54,6 +54,7 @@ model Score {
   strengths         String
   improvements      String
   duration          Int      @default(0)
+  mode              String?  // text, voice — how the booking/session happened
   createdAt     DateTime @default(now())
 }
 

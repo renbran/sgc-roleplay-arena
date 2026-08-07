@@ -121,6 +121,7 @@ interface ScoreRecord {
   grade: "A" | "B" | "C" | "D" | "F";
   outcome: "booked" | "partial" | "lost";
   summary: string;
+  mode?: "text" | "voice";
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -209,7 +210,7 @@ export default function Home() {
     id: string; rank: number; userName: string; personaName: string;
     personaId: string; overall: number; grade: string; outcome: string;
     duration: number; createdAt: string; rapport: number; discovery: number;
-    objectionHandling: number; closing: number; difficulty: string;
+    objectionHandling: number; closing: number; difficulty: string; mode?: string;
   }>>([]);
   const [leaderboardLoading, setLeaderboardLoading] = useState(false);
   const [leaderboardError, setLeaderboardError] = useState<string | null>(null);
@@ -248,7 +249,7 @@ export default function Home() {
   const [bookingToken, setBookingToken] = useState<string>("");
   const [pendingScoreRecovery, setPendingScoreRecovery] = useState<{
     score: AutoScore; personaId: string; personaName: string;
-    userName: string; duration: number; date: string;
+    userName: string; duration: number; date: string; mode: string;
   } | null>(null);
 
   // Server-persisted "resume where I left off" — distinct from the pending
@@ -1146,7 +1147,7 @@ export default function Home() {
       const serverRecords: ScoreRecord[] = data.scores.map((s: {
         id: string; userName: string; personaId: string; personaName: string; createdAt: string;
         duration: number; rapport: number; discovery: number; objectionHandling: number; closing: number;
-        overall: number; grade: string; outcome: string; summary?: string;
+        overall: number; grade: string; outcome: string; summary?: string; mode?: string;
       }) => ({
         id: s.id,
         userName: s.userName,
@@ -1162,6 +1163,7 @@ export default function Home() {
         grade: s.grade as ScoreRecord["grade"],
         outcome: (s.outcome === "won" ? "booked" : s.outcome) as ScoreRecord["outcome"],
         summary: s.summary || "",
+        mode: s.mode as ScoreRecord["mode"],
       }));
       setSavedScores(prev => {
         const byId = new Map(prev.map(r => [r.id, r]));
@@ -1410,6 +1412,7 @@ export default function Home() {
             userName,
             duration: callTimer,
             date: new Date().toISOString(),
+            mode,
           }));
         } catch { /* storage full */ }
         if (!sessionBooked) {
@@ -1422,7 +1425,7 @@ export default function Home() {
       setScoreFailed(true);
     }
     setIsScoring(false);
-  }, [selectedPersona, isScoring, autoScore, chatMessages, sessionBooked, userName, callTimer]);
+  }, [selectedPersona, isScoring, autoScore, chatMessages, sessionBooked, userName, callTimer, mode]);
 
   const handleEndSession = () => {
     setShowEndDialog(true);
@@ -1449,6 +1452,7 @@ export default function Home() {
       grade: score.grade,
       outcome: score.outcome,
       summary: score.summary,
+      mode,
     };
     try {
       const res = await fetch("/api/scores", {
@@ -1470,6 +1474,7 @@ export default function Home() {
           strengths: score.strengths,
           improvements: score.improvements,
           duration: callTimer,
+          mode,
         }),
       });
       if (!res.ok) {
@@ -1492,7 +1497,7 @@ export default function Home() {
     } finally {
       savingRef.current = false;
     }
-  }, [selectedPersona, userName, callTimer]);
+  }, [selectedPersona, userName, callTimer, mode]);
 
   const handleSaveEndSession = async () => {
     if (autoScore) {
@@ -1759,6 +1764,7 @@ export default function Home() {
                     strengths: ps.score.strengths,
                     improvements: ps.score.improvements,
                     duration: ps.duration,
+                    mode: ps.mode,
                   }),
                 });
                 if (!res.ok) {
@@ -1780,6 +1786,7 @@ export default function Home() {
                   grade: ps.score.grade,
                   outcome: ps.score.outcome,
                   summary: ps.score.summary,
+                  mode: ps.mode as "text" | "voice" | undefined,
                 };
                 setSavedScores(prev => {
                   const updated = [record, ...prev].slice(0, 200);
@@ -2789,6 +2796,19 @@ export default function Home() {
     return <Pause className="w-4 h-4 text-amber-600" />;
   };
 
+  const modeBadge = (mode?: string) => {
+    if (mode !== "text" && mode !== "voice") return null;
+    const isVoice = mode === "voice";
+    return (
+      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${
+        isVoice ? "bg-violet-100 text-violet-700 border-violet-300" : "bg-blue-100 text-blue-700 border-blue-300"
+      }`}>
+        {isVoice ? <Phone className="w-3 h-3" /> : <MessageSquare className="w-3 h-3" />}
+        {isVoice ? "Call" : "Chat"}
+      </span>
+    );
+  };
+
   const renderHistory = () => (
     <div className="space-y-4 md:space-y-6">
       <div className="flex items-center justify-between">
@@ -2818,10 +2838,11 @@ export default function Home() {
                     <Badge className={`text-lg font-bold px-3 py-1 border shrink-0 ${getGradeColor(record.grade)}`}>{record.grade}</Badge>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <div>
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-semibold text-sm">{record.userName}</span>
                           <span className="text-muted-foreground text-xs mx-1">vs</span>
                           <span className="text-sm">{record.personaName}</span>
+                          {modeBadge(record.mode)}
                         </div>
                         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                           {outcomeIcon(record.outcome)}
@@ -3000,6 +3021,7 @@ export default function Home() {
                       <Badge className={`text-xs px-1.5 py-0 ${getGradeColor(entry.grade)}`}>
                         {entry.grade}
                       </Badge>
+                      {modeBadge(entry.mode)}
                     </div>
                     <div className="flex items-center gap-1.5 text-xs">
                       {getOutcomeIcon(entry.outcome)}
@@ -3015,8 +3037,9 @@ export default function Home() {
                   <div className="hidden md:flex items-center gap-2 col-span-1">
                     {getRankDisplay(entry.rank)}
                   </div>
-                  <div className="hidden md:block col-span-3">
-                    <span className="font-medium text-sm">{entry.userName}</span>
+                  <div className="hidden md:flex items-center gap-1.5 col-span-3 min-w-0">
+                    <span className="font-medium text-sm truncate">{entry.userName}</span>
+                    {modeBadge(entry.mode)}
                   </div>
                   <div className="hidden md:block col-span-2 text-sm text-muted-foreground truncate" title={entry.personaName}>
                     {entry.personaName}
