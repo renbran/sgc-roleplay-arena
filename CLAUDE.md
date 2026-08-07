@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Is
 
-**SGC TECH Roleplay Arena** — an AI-powered sales training web app built on Next.js 16 with App Router. Sales reps practice cold-calling against 13 realistic AI buyer personas in either text chat or voice mode. Deployed on Vercel (production: `roleplay-arena-psi.vercel.app`) and also on a self-hosted Linux server behind Caddy on port 81.
+**SGC TECH Roleplay Arena** — an AI-powered sales training web app built on Next.js 16 with App Router. Sales reps practice cold-calling against 13 realistic AI buyer personas in either text chat or voice mode. Deployed on Vercel (production: `roleplay-arena.vercel.app` — `roleplay-arena-psi.vercel.app` is a stale orphaned alias, confirmed 2026-08-07 to be serving old code) and also on a self-hosted Linux server behind Caddy on port 81.
 
 The git root is `D:\01_WORK_PROJECTS` (the parent directory). The Next.js app lives at `D:\01_WORK_PROJECTS\Roleplay\`.
 
