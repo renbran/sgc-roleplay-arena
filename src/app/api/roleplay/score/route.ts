@@ -182,7 +182,12 @@ function parseScore(raw: string): ScoreBreakdown {
       const discovery = clampScore(parsed.discovery);
       const objectionHandling = clampScore(parsed.objectionHandling);
       const closing = clampScore(parsed.closing);
-      const overall = Math.round((rapport + discovery + objectionHandling + closing) / 4);
+      // Weighted, not a flat average: objection handling is the priority skill for
+      // this call stage (the cold call, before a meeting exists) — pricing itself
+      // isn't negotiated until the Discovery workshop that comes after booking.
+      const overall = Math.round(
+        rapport * 0.20 + discovery * 0.25 + objectionHandling * 0.35 + closing * 0.20
+      );
 
       return {
         rapport,
@@ -266,7 +271,7 @@ export async function POST(request: Request) {
     const loses = persona.loseConditions.join(" | ");
     const repLabel = userName || "the rep";
 
-    const system = `You are a strict sales coach scoring a roleplay call. Score only what is directly observed in transcript evidence and never infer hidden intent. Output valid JSON only.
+    const system = `You are a strict sales coach scoring a roleplay call against SGC Tech AI's actual sales methodology (the 4-Video Playbook + live cold-call training script), not generic sales skill. Score only what is directly observed in transcript evidence and never infer hidden intent. Output valid JSON only.
 
 Scoring rules:
 - 70+ requires explicit strong evidence in that dimension.
@@ -274,11 +279,11 @@ Scoring rules:
 - <30 means the dimension was not reached or was handled poorly.
 - ${stageGuidance(repTurns)}
 
-Dimensions:
-- rapport: trust building, personalization, tone quality.
-- discovery: specific probing, pain discovery, follow-up quality.
-- objectionHandling: concrete rebuttals with value evidence.
-- closing: clear next-step ask and commitment progress.
+Dimensions (objectionHandling is weighted highest in the overall score — it is the priority skill at this call stage; real pricing negotiation doesn't happen until the Discovery workshop that comes AFTER a meeting is booked, so don't grade this call as if it were a pricing negotiation):
+- rapport: trust building, personalization, tone quality. Reward a proper Value Statement in the opening exchange — who they are, a SPECIFIC researched reason for calling this prospect (not generic small talk), and a direct ask for time, delivered as one smooth block.
+- discovery: specific probing, pain discovery, follow-up quality. Reward Discovery Tree progression — surface (how they handle it today) -> process (the actual steps) -> pain (what specifically hurts) -> cost impact (what it costs in time/money/risk) — climbed IN ORDER. Penalize jumping straight to cost/impact questions before the surface and process levels were actually explored.
+- objectionHandling (PRIORITY DIMENSION): reward the Mr. Miyagi pattern — validating the objection ("I hear you...") BEFORE reframing it into a reason to continue — over arguing, ignoring, or steamrolling the objection. Cost/budget objections at THIS stage should be deflected toward the free Discovery/diagnostic, not negotiated: a rep who responds to "no budget" / "how much" / "send me pricing" by pointing out the Discovery session itself is free and no-obligation ("let's find out what the gap actually is first, no cost to you") is handling it correctly — reward this explicitly as a strength when present, and flag its absence as an improvement area when a cost objection came up and the rep skipped straight to discussing numbers instead. The exact dollar figures the prospect quotes are illustrative, NOT a memorization test — never penalize the rep for not reciting specific tier numbers or getting figures slightly wrong. Also never reward the rep discounting or negotiating price on this call — that's premature at this stage regardless of how it's phrased.
+- closing: clear next-step ask and commitment progress. A believable "booked" outcome should show evidence of the four Verifiable Buyer Exit Criteria having come up somewhere in the call — a specific problem, the cost of doing nothing, who approves, and a timeline — not just a pleasant conversation that happened to end in a "sure, let's talk."
 
 Outcome:
 - booked: prospect explicitly commits.
